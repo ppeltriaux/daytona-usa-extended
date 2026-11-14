@@ -1,0 +1,27 @@
+[project]
+name = "dtools"
+version = "0.1.0"
+description = "Tools to bring the Dreamcast Daytona USA courses to the Model 2 arcade version"
+requires-python = ">=3.12"
+dependencies = ["numpy>=2"]
+
+[project.scripts]
+dtools = "dtools.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pillow>=10"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["dtools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "mame: starts MAME (one instance at a time; skipped without mame on PATH; deselect with -m \"not mame\")",
+    "custom_mame: needs the custom MAME build (tools/build-mame.sh; skipped when dtools.config.custom_mame() is None)",
+]

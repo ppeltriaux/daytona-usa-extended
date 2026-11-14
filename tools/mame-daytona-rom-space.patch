@@ -1,0 +1,50 @@
+diff --git a/src/mame/sega/model2.cpp b/src/mame/sega/model2.cpp
+index 899828e..11cf800 100644
+--- a/src/mame/sega/model2.cpp
++++ b/src/mame/sega/model2.cpp
+@@ -6742,7 +6742,10 @@ ROM_START( daytona ) /* Daytona USA (Japan, Revision A), Original Model 2 w/Mode
+ 	ROM_LOAD32_WORD("epr-16722a.12", 0x000000, 0x020000, CRC(48b94318) SHA1(a476a9a3531beef760c88c9634ed4a7d270e8ee7) )
+ 	ROM_LOAD32_WORD("epr-16723a.13", 0x000002, 0x020000, CRC(8af8b32d) SHA1(2039ec1f8da524176fcf85473c10a8b6e49e139a) )
+ 
+-	ROM_REGION32_LE( 0x2000000, "main_data", 0 ) // Data
++	// daytona-usa (tools/mame-daytona-rom-space.patch): room for new courses. Each region below is grown as far as the
++	// game's address decoding reaches and erased to zero; the dx-*.bin files fill the new areas. They are NO_DUMP:
++	// loaded when present and never checked, and when absent their areas stay zero (the stock set runs unchanged).
++	ROM_REGION32_LE( 0x2000000, "main_data", ROMREGION_ERASE00 ) // Data
+ 	ROM_LOAD32_WORD("mpr-16528.10",   0x000000, 0x200000, CRC(9ce591f6) SHA1(e22fc8a70b533f7a6191f5952c581fb8f9627906) )
+ 	ROM_LOAD32_WORD("mpr-16529.11",   0x000002, 0x200000, CRC(f7095eaf) SHA1(da3c922f950dd730ea348eae12aa1cb69cee9a58) )
+ 	ROM_LOAD32_WORD("mpr-16808.8",    0x400000, 0x200000, CRC(44f1f5a0) SHA1(343866a6e2187a8ebc17f6727080f9f2f9ac9200) )
+@@ -6756,12 +6759,14 @@ ROM_START( daytona ) /* Daytona USA (Japan, Revision A), Original Model 2 w/Mode
+ 	ROM_COPY( "main_data", 0x800000, 0xd00000, 0x100000 )
+ 	ROM_COPY( "main_data", 0x800000, 0xe00000, 0x100000 )
+ 	ROM_COPY( "main_data", 0x800000, 0xf00000, 0x100000 )
++	ROM_LOAD( "dx-data.bin",          0x1000000, 0x1000000, NO_DUMP ) // i960 0x03000000-0x03ffffff, the rest of the data ROM window
+ 
+-	ROM_REGION32_LE( 0x800000, "copro_data", 0 ) // Copro extra data (collision/height map/etc) (COPRO socket)
++	ROM_REGION32_LE( 0x2000000, "copro_data", ROMREGION_ERASE00 ) // Copro extra data (collision/height map/etc) (COPRO socket); 0x800000 stock
+ 	ROM_LOAD32_WORD("mpr-16537.ic28", 0x000000, 0x200000, CRC(36b7c35a) SHA1(b32fd1d3fc8983fb5f2a7b236b665a8c9b52769f) )
+ 	ROM_LOAD32_WORD("mpr-16536.ic29", 0x000002, 0x200000, CRC(6d6afed9) SHA1(2018468d7d849854b3d0cfbcd217317e2fc93555) )
++	ROM_LOAD( "dx-copro.bin",         0x400000, 0x1c00000, NO_DUMP ) // TGP words 0x100000-0x7fffff (bank bit 0x800000, 23-bit word address)
+ 
+-	ROM_REGION32_LE( 0x1000000, "polygons", 0 ) // Models
++	ROM_REGION32_LE( 0x2000000, "polygons", ROMREGION_ERASE00 ) // Models; 0x1000000 stock
+ 	ROM_LOAD32_WORD("mpr-16523.ic16", 0x000000, 0x200000, CRC(2f484d42) SHA1(0b83a3fc92b7d913a14cfb01d688c63555c17c41) )
+ 	ROM_LOAD32_WORD("mpr-16518.ic20", 0x000002, 0x200000, CRC(df683bf7) SHA1(16afe5029591f3536b5b75d9cf50a34d0ea72c3d) )
+ 	ROM_LOAD32_WORD("mpr-16524.ic17", 0x400000, 0x200000, CRC(34658bd7) SHA1(71b47626ffe5b26d1140afe1b830a9a2be86c88f) )
+@@ -6770,12 +6775,15 @@ ROM_START( daytona ) /* Daytona USA (Japan, Revision A), Original Model 2 w/Mode
+ 	ROM_LOAD32_WORD("mpr-16520.ic22", 0x800002, 0x200000, CRC(d66bd9bd) SHA1(660171674484375a27595630e5e2d2ad76a06d1a) )
+ 	ROM_LOAD32_WORD("mpr-16772.ic19", 0xc00000, 0x200000, CRC(770ed912) SHA1(1789f35dd403f73f8be18495a0fe4ad1e6841417) )
+ 	ROM_LOAD32_WORD("mpr-16771.ic23", 0xc00002, 0x200000, CRC(a2205124) SHA1(257a3675e4ef6adbf61285a5daa5954223c28cb2) )
++	ROM_LOAD( "dx-poly.bin",          0x1000000, 0x1000000, NO_DUMP ) // oba word index 0x400000-0x7fffff (bit 0x800000 selects the ROM)
+ 
+-	ROM_REGION16_LE( 0x1000000, "textures", 0 ) // Textures
++	ROM_REGION16_LE( 0x1000000, "textures", ROMREGION_ERASE00 ) // Textures; already the most tpa / tha reach (bit 0x800000 selects texture RAM)
+ 	ROM_LOAD32_WORD("mpr-16522.25", 0x000000, 0x200000, CRC(55d39a57) SHA1(abf7b0fc0f111f90da42463d600db9fa32e95efe) )
+ 	ROM_LOAD32_WORD("mpr-16521.24", 0x000002, 0x200000, CRC(af1934fb) SHA1(a6a21a23cd34d0de6d3e6a5c3c2687f905d0dc2a) )
+ 	ROM_LOAD32_WORD("mpr-16770.27", 0x800000, 0x200000, CRC(f9fa7bfb) SHA1(8aa933b74d4e05dc49987238705e50b00e5dae73) )
+ 	ROM_LOAD32_WORD("mpr-16769.26", 0x800002, 0x200000, CRC(e57429e9) SHA1(8c712ab09e61ef510741a55f29b3c4e497471372) )
++	ROM_LOAD( "dx-tex1.bin",          0x400000, 0x400000, NO_DUMP ) // the zero gap after the first pair
++	ROM_LOAD( "dx-tex2.bin",          0xc00000, 0x400000, NO_DUMP ) // the zero gap after the second pair
+ 
+ 	ROM_REGION( 0x20000, "cpu3", 0) // Communication program
+ 	ROM_LOAD( "epr-16726.bin", 0x000000, 0x020000, CRC(c179b8c7) SHA1(86d3e65c77fb53b1d380b629348f4ab5b3d39228) )

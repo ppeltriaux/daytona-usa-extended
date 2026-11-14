@@ -1,0 +1,66 @@
+# --- NEVER commit game data (copyrighted). Tools and docs only. ---
+/ROMS/
+*.zip
+*.7z
+*.rar
+*.bin
+*.cue
+*.iso
+*.chd
+*.nv
+*.rom
+/roms/
+/saturn/
+/extracted/
+/build/
+*.ips
+*.bps
+*.patched
+# game data by name, wherever it is unpacked (Daytona CCE disc and Model 2 ROM name shapes)
+epr-*
+mpr-*
+opr-*
+315-*
+*.MDL
+*.TEX
+*.BG
+*.BLK
+*.SND
+*.PRG
+*.TSK
+*.DAT
+[A-Z0-9_]*.BIN
+CDDA[0-9]*
+bank[01].bin
+# MAME runtime output
+/snap/
+/nvram/
+/cfg/
+/inp/
+/sta/
+# OS / editor / python
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+/out/
+local.env
+.superpowers/
+*.egg-info/
+.pytest_cache/
+# Dreamcast disc contents by name/extension (GD-ROM dumps and what they hold)
+*.gdi
+*.cdi
+*.ADX
+*.PVR
+*.AFS
+*.NJ
+*.NJM
+*.MLT
+*.DRV
+*.DPS
+1ST_READ.BIN
+GHOST_*
+# extracted geometry and pictures of it (spike OBJ/PNG outputs belong under out/)
+*.obj
+*.png
