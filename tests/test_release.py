@@ -129,10 +129,10 @@ def _release(romset_zip, disc) -> RomSet:  # noqa: F811
 
 
 RELEASE_SHA1 = {"program": "1f6a3b04d75b03489a2f5c1278cbd299af917ef7",
-                "data": "c28afcee5ec4e513b913e47e4a4551ac47bf993a",
+                "data": "606027764e1c67f57cfce838d0c90d3e49a7ef34",
                 "copro_data": "06e8923fa71bf8f5935b89c746058e3910f2396f",
-                "polygons": "c80e616e717766a66d565f7b653d7f4af205d513",
-                "textures": "428ceda679d7bd41e9767d0720764b937ef84488"}
+                "polygons": "69be60453f1168378dd862c625609a920e942baa",
+                "textures": "c31364a959230807ff3ab13b2d519748e529a83b"}
 """The release set (`release_set`: the M5b chain, the named row, the start words of 3-7, the title, the views; Task 7's
 painted maps on the select), the sha1 of each region, built independently of the code under test: ed570c2 (Task 5's
 first commit) from a git archive into a scratch folder, a fresh venv on the repository's Python 3.15.0 with `pip install
@@ -142,7 +142,10 @@ commit wrote the same 41 members byte for byte. Phase 13 Task 2 round 2 repinned
 exact (5b970ee; four National Park Speedway pairs on the shear bound, three of which the float lstsq had rejected on
 this Mac, now merge), built by 5b970ee's code from a git archive (tools/clean_install.sh: fresh venv, Python 3.15.0,
 numpy 2.5.4; out/phase13/r2/pins.txt, its `dtools build` 370 s cold); the Docker linux/amd64 clean install wrote the
-same 41 members (docs/spike/2026-11-page.md, "The clean install")."""
+same 41 members (docs/spike/2026-11-page.md, "The clean install"). v0.1.1 repinned it (data, polygons, textures;
+program and copro_data unchanged): build.shadow_volumes also takes an untextured closed mesh of a kind-3 object (CS4's
+23 and CS6's 5 volumes not black; out/debug/np-start/report.md); out/debug/np-start/fixset.py, v0.1's code with only
+that rule patched in, built these bytes before the change was written."""
 
 
 def test_release_set_pinned(romset_zip, disc):  # noqa: F811

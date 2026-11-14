@@ -305,8 +305,11 @@ table's end is followed by 0 or 4 zero bytes (39 / 25 files).
 - Texture table: `ntex` × 16 bytes: u16 width, u16 height (16–256; square in all 64 files), u32 format word
   (`0x100`–`0x402`), u32 offset into the `_TEX.BIN`, u32 0. The format word and the texture data: see
   "`CSnv_TEX.BIN` and `VCSnv_TEX.BIN`".
-- Object: u32 1, u32 kind: 1, 3 or 5 (7,449 / 1,000 / 32 objects over the 64 files; the kind is kept raw), bounding sphere (4 floats: centre, radius), then meshes until a zero word, then one
-  word = the object's number of strip entries (true for all 8,481).
+- Object: u32 1, u32 kind: 1, 3 or 5 (7,449 / 1,000 / 32 objects over the 64 files; the kind is kept raw), bounding
+  sphere (4 floats: centre, radius), then meshes until a zero word, then one word = the object's number of strip
+  entries (true for all 8,481). Kind 3 holds the shadow (modifier) volumes and the sky domes (v0.1.1, on the five
+  converted courses; CS4's 19:0, a volume, is kind 1). A volume's face colour is not a shade: black on CS3, CS5 and
+  CS7, a per-volume ID on CS4 (a grey ramp 0.05-0.9, some pinkish) and (0, 0.02, 0) on CS6.
 - Mesh: a 0x50-byte header then strip data:
   - (Every mesh float is finite; the texture index is -1 or inside the texture table, in all 64 files.)
   - +0x00 four words that look like PowerVR polygon parameters (`0x8000002c`/`0x8000003c`/`0x800000bc`…,

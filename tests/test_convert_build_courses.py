@@ -31,7 +31,8 @@ from tests.test_mirror import _differ
 # ---- Phase 10 Task 3: National Park Speedway (n 4) at id 4 (discovery log docs/spike/2026-11-courses-4-7.md) ----
 
 PARK_DECALS = (27, 43, 69, 70, 71)
-PARK_VOLUMES = ((7, 0), (8, 0), (9, 0), (13, 0), (19, 0), (27, 0), (30, 0), (33, 0), (38, 0), (41, 0), (47, 0))
+PARK_VOLUMES = ((7, 0), (8, 0), (9, 0)) + tuple((13, k) for k in range(15)) + ((19, 0), (27, 0), (30, 0), (33, 0),
+                (38, 0), (41, 0)) + tuple((45, k) for k in range(5)) + tuple((46, k) for k in range(4)) + ((47, 0),)
 PARK_PROPS = (2, 4, 5, 6, 7, 8, 9, 52, 53)
 """CS4's drops, measured: the decal textures, the shadow volumes (19:0 among them, ruled one), the run-time props
 (the road guard keeps none of them)."""
@@ -62,12 +63,13 @@ def _ground_heights(d, x: float, z: float) -> list[float]:
 
 
 def test_cs4_drop_rules(disc):  # noqa: F811
-    """CS4 (National Park Speedway) as the scenery draws it: the decals, the two sky domes, eleven shadow volumes and
-    nine run-time props are dropped (kept_model with the course, so past the road guard).
+    """CS4 (National Park Speedway) as the scenery draws it: the decals, the two sky domes, 34 shadow volumes
+    (v0.1.1: 23 of them in per-volume ID colours, not black, found by their kind) and nine run-time props are dropped (kept_model with the course, so past the road guard).
 
     - 19:0 (kind 1, 263 x 15 x 253 units) is a shadow volume and dropped (the ruling: discovery log, the renders with
-      and without it in out/phase10/snaps/task3): untextured, black and closed like the other ten, with their PowerVR
-      parameter words exactly (0x8000002d, 0x83400000, 0x20080140, 0x4000000) and their face colour; it lies along
+      and without it in out/phase10/snaps/task3): untextured, black and closed like the ten black ones, with their PowerVR
+      parameter words exactly (0x8000002d, 0x83400000, 0x20080140, 0x4000000; v0.1.1: the 23 in ID colours take
+      0x8000002d or 0x800000ad first) and their face colour; it lies along
       the road (50 road points, segments 76-125, inside its box), where drawn as polygons it stands as a black wall
       over the road's left wall and verge; its kind word (1, the others 3) is the only difference.
     - the road guard keeps none of CS4's props: objects 52 (a frame, texture 35) and 53 (a tree, texture 42) lie
@@ -90,8 +92,8 @@ def test_cs4_drop_rules(disc):  # noqa: F811
     # 19:0
     vol = m.objects[19]
     assert vol.kind == 1 and len(vol.meshes) == 1 and vol.meshes[0].texture == pol.NO_TEXTURE
-    assert {m.objects[o].meshes[k].params for o, k in PARK_VOLUMES} == {(0x8000002D, 0x83400000, 0x20080140,
-                                                                        0x4000000)}
+    assert {m.objects[o].meshes[k].params for o, k in PARK_VOLUMES} == {(p, 0x83400000, 0x20080140, 0x4000000)
+                                                                        for p in (0x8000002D, 0x800000AD)}
     assert {m.objects[o].kind for o, k in PARK_VOLUMES if o != 19} == {3}
     ps = np.array([(e.x, e.y, e.z) for st in vol.meshes[0].strips for e in st.entries if isinstance(e, pol.Vertex)])
     lo, hi = ps.min(axis=0), ps.max(axis=0)
@@ -241,10 +243,10 @@ M4B_SHA1 = {"program": "c45108f1b915bd220b700e7e98b169c6901960be", "data": "7c64
 
 
 FINAL_SHA1 = {"program": "5e8524361d3369a27cc88adcddeafe7c936a643d",
-              "data": "886cddf9b47ace2dc2b7ab6f6fed312613c83bec",
+              "data": "11d72024a985ba1d690f15ebec2061aa44caea4b",
               "copro_data": "49473ef2c22b66e022d67c9e71326e29e338624c",
-              "polygons": "ec2920d662e277e69dcd1602d8ce67d95c957505",
-              "textures": "8ca5815b0d2fc4fba36b481b855f1864751eecf0"}
+              "polygons": "f095aae1e96fe4528f6d9f5566d5d481219160ef",
+              "textures": "d8535a4977e588d3ab9dedd9e5a361d027701d46"}
 """Task 3's final set (tests/test_mirrors_mame.py `task3_set`: Desert City at 3, National Park Speedway at 4, the
 mirrors of 0-3, the rankings, the select with TASK3_ENTRIES), the sha1 of each region, built independently of the code
 under test: 0f0a36c's code (git archive, its own empty re-mesh cache) with the one deliberate change of Task 4's fix
@@ -257,7 +259,10 @@ and HUD map words of the mirrors 8-11 (2,363 bytes); in polygons, id 4's objects
 bytes). The re-mesh's output is the same object for object but 3 (REMESH4_SHA1). Phase 13 Task 2 round 2 repinned it:
 model._merge's quad tests made exact (5b970ee; four National Park Speedway pairs on the shear bound, three of which the
 float lstsq had rejected on this Mac, now merge), built by 5b970ee's code from a git archive (fresh venv, Python 3.15.0,
-numpy 2.5.4; out/phase13/r2/pins.txt); linux/amd64 builds the same bytes."""
+numpy 2.5.4; out/phase13/r2/pins.txt); linux/amd64 builds the same bytes. v0.1.1 repinned it (data, polygons, textures; program and copro_data unchanged): build.shadow_volumes
+also takes an untextured closed mesh of a kind-3 object (CS4's 23 volumes in per-volume ID colours), built by the code
+under test; the release pin, test_release.py RELEASE_SHA1, matches an independent build of v0.1's code with only that
+rule patched in (out/debug/np-start/fixset.py)."""
 FINAL_SHA1_T3 = {"program": "5e8524361d3369a27cc88adcddeafe7c936a643d",
                  "data": "c03545426e2990359b095f5766b45b238f96ea3a",
                  "copro_data": "49473ef2c22b66e022d67c9e71326e29e338624c",
@@ -365,7 +370,8 @@ def test_remeshed_cache_leaves_no_tmp(tmp_path, monkeypatch):
 # ---- Phase 10 Task 4: Mermaid Lake (n 7) at id 7 (discovery log docs/spike/2026-11-courses-4-7.md, "Mermaid Lake") --
 
 LAKE_DECALS, LAKE_DOMES = (112,), (0, 1)
-LAKE_VOLUMES = ((132, 0), (134, 0), (134, 1), (137, 0), (140, 0), (142, 0), (145, 0), (162, 0))
+LAKE_VOLUMES = ((132, 0), (132, 1), (132, 2), (132, 3), (132, 4), (134, 0), (134, 1), (137, 0), (140, 0), (142, 0),
+                (145, 0), (162, 0))
 LAKE_FLAGS = (tuple(range(3, 67)), tuple(range(67, 131)))
 """CS7 objects 3-66 and 67-130: two waving flags, 64 frames each (an animation the course plays at run time): each
 frame one mesh of 48 vertices, the first series textured 0 (the Stars and Stripes under a SEGA banner), the second 1
@@ -385,7 +391,8 @@ build.NAMED_PROPS[7]."""
 
 def test_cs7_origin_props(disc):  # noqa: F811
     """CS7 (Mermaid Lake) as the scenery draws it (kept_model with the course, so past the road guard, and
-    NAMED_PROPS[7]): the decal texture, the two sky domes, eight shadow volumes and the run-time props are dropped.
+    NAMED_PROPS[7]): the decal texture, the two sky domes, twelve shadow volumes (v0.1.1:
+    132:1-4, kind 3, in a prop already dropped) and the run-time props are dropped.
 
     - the origin rule finds 130 objects (LAKE_PROPS), and they are props: two flag animations of 64 frames each
       (LAKE_FLAGS: the same mesh shape frame to frame, moved a little, all at the same place: a single object would
@@ -716,17 +723,20 @@ def test_final_set_with_id7(disc):  # noqa: F811
 # ---- Phase 10 Task 5: the mirrors of National Park Speedway (id 12) and Mermaid Lake (id 15) on the final set ----
 
 FINAL_SHA1_T4 = {"program": "343c344579a506eb3c40c1ddeda7fddd736138ef",
-                 "data": "320c772b62447ce5ba5562fdf8a19ee45d5e2bb7",
+                 "data": "d80bfee82ed81d315a3cbb5fa520547ee9aff257",
                  "copro_data": "34229d4fbcbfb2efe041417bef8b7abb66466214",
-                 "polygons": "a537ef34146441478f664d3177d948d4cad4ed42",
-                 "textures": "27361840174ff4b8de52d7bbedb5c5a84ae4f720"}
+                 "polygons": "3a9c938622784262f7e6b4ba84aea6fb36c17bdf",
+                 "textures": "e737a5b0cb3774e881b781451a896d29c5b2347c"}
 """Task 4's final set (tests/test_mirrors_mame.py `task4_set`: Desert City at 3, National Park Speedway at 4, Mermaid
 Lake at 7, the mirrors of 0-3, the rankings, the select with TASK4_ENTRIES), the sha1 of each region, built
 independently of the code under test: c7a4855's code (git archive into a scratch folder, its own empty re-mesh cache,
 343 s cold) building its own tests/test_mirrors_mame.py `final_set`. Phase 13 Task 2 round 2 repinned it: model._merge's
 quad tests made exact (5b970ee; four National Park Speedway pairs on the shear bound, three of which the float lstsq had
 rejected on this Mac, now merge), built by 5b970ee's code from a git archive (fresh venv, Python 3.15.0, numpy 2.5.4;
-out/phase13/r2/pins.txt); linux/amd64 builds the same bytes."""
+out/phase13/r2/pins.txt); linux/amd64 builds the same bytes. v0.1.1 repinned it (data, polygons, textures; program and copro_data unchanged): build.shadow_volumes
+also takes an untextured closed mesh of a kind-3 object (CS4's 23 volumes in per-volume ID colours), built by the code
+under test; the release pin, test_release.py RELEASE_SHA1, matches an independent build of v0.1's code with only that
+rule patched in (out/debug/np-start/fixset.py)."""
 
 
 def test_shipped_row_is_eight(disc):  # noqa: F811
@@ -1627,10 +1637,10 @@ def test_cs5_levers(disc):  # noqa: F811
 # ---- Phase 11 Task 5: the shipped set pinned ----
 
 M5B_SHA1 = {"program": "c13354b25ce3d067864b232241618eceeee72b7e",
-            "data": "8034b14469e96f7cde9094e0d7821ac3d3b8b08c",
+            "data": "f398e474aecb00c608ad26bec04ba4e98d2b1ec8",
             "copro_data": "06e8923fa71bf8f5935b89c746058e3910f2396f",
-            "polygons": "d5ec49a7d4f8fcb3e9fbb474df570d47d5933b65",
-            "textures": "a3a25b81ebcf60e31973f558b5724d50be6050e2"}
+            "polygons": "9aa08c3499524d2b92091d8fd6c6bc87cbe25978",
+            "textures": "d1fd0824e1f6d9744f33176508c1bcc9e1fe9f6e"}
 """Phase 11's shipped set (M5b; tests/test_courses_mame.py `m5b_set`: grow, guard, widen, ids 3, 4, 7, 6 and 5
 converted, the rankings, the select with the row of eight, then `build.viewed_set`), the sha1 of each region, built
 independently of the code under test: fd5703f's code (Task 4's last commit; git archive into a scratch folder, its own
@@ -1639,7 +1649,10 @@ empty re-mesh cache via DAYTONA_OUT, the re-meshes of 4, 5 and 6 cold, 393 s) bu
 (tests/test_playtest.py test_m5b_set_bytes). Phase 13 Task 2 round 2 repinned it: model._merge's quad tests made exact
 (5b970ee; four National Park Speedway pairs on the shear bound, three of which the float lstsq had rejected on this Mac,
 now merge), built by 5b970ee's code from a git archive (fresh venv, Python 3.15.0, numpy 2.5.4;
-out/phase13/r2/pins.txt); linux/amd64 builds the same bytes."""
+out/phase13/r2/pins.txt); linux/amd64 builds the same bytes. v0.1.1 repinned it (data, polygons, textures; program and copro_data unchanged): build.shadow_volumes
+also takes an untextured closed mesh of a kind-3 object (CS4's 23 and CS6's 5 volumes not black), built by the code
+under test; the release pin, test_release.py RELEASE_SHA1, matches an independent build of v0.1's code with only that
+rule patched in (out/debug/np-start/fixset.py)."""
 
 
 def test_m5b_set_pinned(disc):  # noqa: F811

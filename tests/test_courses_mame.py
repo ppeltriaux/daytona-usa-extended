@@ -49,12 +49,14 @@ PARK_RISES = 2
 PARK_SECONDS = 172              # the long-time run, to frame 9894: past the player's lap and every AI car's second lap
 PARK_LAP_END = 8539             # the player (wheel centred) reaches the lap line, lap 1
 PARK_LONG_LAPS = 2              # laps each AI car completes in the long-time run
-PARK_MAX, PARK_MAX_AT, PARK_COUNT_MAX = 3884, 6950, 4395
+PARK_MAX, PARK_MAX_AT, PARK_COUNT_MAX = 3754, 6950, 4255
 """The drawn-polygon maximum per list over the player's lap (GO to PARK_LAP_END, the long-time set) and its frame
 (segment 337), and the largest polygon count (the cells log) over it. Task 3 fix round 1: 3,909 and 4,423 (the
 replay's prediction exactly); since Task 4's fix round 1 (build.NAMED_PROPS[4]: the big wheel's frame, object 3,
 dropped) 25 fewer drawn at the same frame and 28 fewer counted, measured; the ground calls (CALLS_PARK_*), the
-time-over and the lap are unchanged."""
+time-over and the lap are unchanged. v0.1.1 (build.shadow_volumes takes kind-3 volumes: CS4's 23 in ID colours
+dropped): 3,884 and 4,395 before, 130 fewer drawn at the same frame and 140 fewer counted, measured; the rest
+unchanged."""
 CALLS_PARK_TO_TIME_OVER = {0: 24588, 1: 4266, 2: 1570, 3: 1421, 4: 486, 5: 199, 6: 90, 8: 218, 9: 502, 14: 24,
                            16: 23, 20: 206, 22: 141, 24: 173, 25: 21, 26: 248, 28: 80, 29: 1, 30: 134, 32: 219,
                            33: 2, 34: 751, 35: 751, 36: 764, 37: 192, 38: 285, 39: 714}
@@ -388,10 +390,11 @@ City's mirror 1655)."""
 MIRROR_LAP_END = {12: 8323, 15: 4935}
 """Per mirror, the frame its player reaches the lap line, lap 1 (measured; the originals' PARK_LAP_END 8539 with the
 centred paddle, LAKE_LAP_END 4955 driven)."""
-MIRROR_MAX = {12: (4013, 6872, 4567), 15: (3837, 1715, 4537)}
+MIRROR_MAX = {12: (3883, 6872, 4427), 15: (3837, 1715, 4537)}
 """Per mirror, (the drawn-polygon maximum per list over its player's lap, its frame, the largest polygon count over
-it) (measured, frozen): 12 draws 4,013 at 6872 (segment 338), +129 on National Park Speedway's 3,884 (inside
-MIRROR_MARGIN; 238 under BAR), the count 4,567 (433 under course.OBC); 15 draws 3,837 at 1715, 60 fewer than Mermaid
+it) (measured, frozen): 12 draws 3,883 at 6872 (segment 338), +129 on National Park Speedway's 3,754 (inside
+MIRROR_MARGIN; 368 under BAR), the count 4,427 (573 under course.OBC; v0.1.1's kind-3 volumes: 4,013 and 4,567
+before, 130 and 140 fewer, as the original); 15 draws 3,837 at 1715, 60 fewer than Mermaid
 Lake's 3,897, the count 4,537 at 1715, the field bunched after the green light (Mermaid Lake's own largest count, the
 same frame)."""
 MIRROR_CAMERA = {12: (0.0036, 5, 0.8717, 0.8745), 15: (0.3402, 956, 0.8686, 1.6557)}
@@ -850,10 +853,12 @@ RINK_REPEAT = frozenset({RINK_GO + 1})
 RINK_SECONDS = 169              # to about frame 9720: past GO + 8000, every AI car on lap 2, none on lap 3 (9831)
 RINK_LAP_END = 7611             # the player (wheel centred) reaches the lap line, lap 1
 RINK_LONG_LAPS = 2
-RINK_MAX, RINK_MAX_AT, RINK_COUNT_MAX = 3816, 2067, 4694
+RINK_MAX, RINK_MAX_AT, RINK_COUNT_MAX = 3788, 2067, 4666
 """The drawn-polygon maximum per list over the player's lap and its frame (segment 23), and the largest polygon
 count: with QUAD[6], REMESH[6], NAMED_PROPS[6], THIN[6] and the course's own view (build.VIEW[6]), within
-BAR - THIN_MARGIN and course.OBC - THIN_MARGIN (set before measuring)."""
+BAR - THIN_MARGIN and course.OBC - THIN_MARGIN (set before measuring). v0.1.1 (build.shadow_volumes takes
+kind-3 volumes: CS6's 149:0 and 83:1-4 dropped): 3,816 and 4,694 before, 28 fewer drawn at the same frame and 28 fewer
+counted, measured; the rest unchanged."""
 CALLS_RINK_TO_TIME_OVER = {0: 16247, 1: 2784, 2: 715, 3: 477}
 CALLS_RINK_LONG_TIME = {0: 35863, 1: 2950, 2: 1664, 3: 789, 4: 971, 5: 465, 6: 722, 7: 939, 8: 150, 10: 869, 11: 2266,
                         12: 868, 13: 401, 14: 1655, 15: 462, 16: 1698, 17: 482, 18: 1096, 19: 833, 20: 145, 21: 496,

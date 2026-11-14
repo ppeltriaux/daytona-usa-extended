@@ -9,7 +9,7 @@ https://continuearcade.com/daytona-usa-extended/
 This repository is a converter: one command builds the game on your machine from your own copies of the arcade game and
 of the Dreamcast disc. It holds none of either (see "Legal").
 
-> **v0.1 is a very early release, still under development.** All eight courses load and race on the arcade's engine,
+> **v0.1.1 is a very early release, still under development.** All eight courses load and race on the arcade's engine,
 > but time limits, laps and opponents are not tuned yet and the new courses have rendering defects: see "Known
 > issues".
 
@@ -63,6 +63,13 @@ build/mame/model2 daytona -rompath ~/daytona-extended -nvram_directory ~/daytona
 courses as you turn the wheel: THREE SEVEN SPEEDWAY, DINOSAUR CANYON, SEA-SIDE STREET GALAXY, then DESERT CITY,
 NATIONAL PARK SPEEDWAY, CIRCUIT PIXIE, RIN RIN RINK and MERMAID LAKE. Every panel shows its course's name; the five new
 ones also show their laps for the game mode and a painted map of the course.
+
+## Changes
+
+- **v0.1.1:** National Park Speedway and Rin Rin Rink no longer draw some of the Dreamcast's shadow volumes as walls
+  (a grey slab behind National Park Speedway's start gantry, grey walls beside its pits and a dark band late in the
+  lap; a black wall on Rin Rin Rink). The race is unchanged; both courses draw fewer polygons.
+- **v0.1:** the first release.
 
 ## Known issues
 

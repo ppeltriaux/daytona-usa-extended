@@ -509,8 +509,8 @@ CS3_TRIANGLES = 22837            # CS3_POL.BIN (the brief's 8,961 is CS0's, Begi
 def test_model_desert_city(disc):  # noqa: F811
     """Review Focus 1 on Desert City (CS3_POL.BIN) as the scenery draws it (build.kept_model): the meshes of the
     dropped decals (build.decals: the shadows 55, 56, 74 and the wholly transparent 81; Task 5 ruling 2), of the two
-    sky domes (build.sky_domes: objects 0 and 1), of the 16 shadow volumes (build.shadow_volumes; Task 6) and of the
-    run-time props at the origin (build.origin_props: objects 2-4, 8-28 and 54; Task 7) removed,
+    sky domes (build.sky_domes: objects 0 and 1), of the 20 shadow volumes (build.shadow_volumes; Task 6; v0.1.1
+    adds 22:1-4, kind 3, in prop 22) and of the run-time props at the origin (build.origin_props: objects 2-4, 8-28 and 54; Task 7) removed,
     the kept triangles less the degenerate ones each appear exactly once over all cells' objects, counted by decoding
     the written objects; every object within MAX_RECORDS; every cell in 0-255; the world inside -1024..1023; the
     counts the discovery log gives (docs/spike, "Model", "Scenery assembled" and "Desert City seen")."""
@@ -550,8 +550,8 @@ DESERT_DROPPED = (77, 1883)
 """Measured: the dropped decals' meshes and triangles (55: 12 meshes, 62 triangles; 56: 18, 370; 74: 31, 657; 81: 16,
 794)."""
 DESERT_SKY = (0, 1)
-DESERT_VOLUMES = ((22, 0), (24, 0), (30, 0), (30, 1), (32, 0), (32, 1), (35, 0), (37, 0), (39, 0), (41, 0), (45, 0),
-                  (51, 0), (63, 0), (65, 0), (67, 0), (67, 1))
+DESERT_VOLUMES = ((22, 0), (22, 1), (22, 2), (22, 3), (22, 4), (24, 0), (30, 0), (30, 1), (32, 0), (32, 1), (35, 0),
+                  (37, 0), (39, 0), (41, 0), (45, 0), (51, 0), (63, 0), (65, 0), (67, 0), (67, 1))
 DESERT_SKY_VOLUME_TRIANGLES = 1536
 """Measured (Task 6): the triangles of the two domes' four meshes and of the 16 volumes."""
 DESERT_PROPS = (2, 3, 4) + tuple(range(8, 29)) + (54,)
@@ -1215,11 +1215,13 @@ def test_remesh_no_cover_across_objects():
     assert len(list(pol.triangles(out))) == 3
 
 
-REMESH4_SHA1 = "fcea416fbb7a034d3924b46212b17e34c69bcdfb"
+REMESH4_SHA1 = "0ad9bc0bc3414e3e8c7fd2f3ae7e5168cc5b1201"
 """The sha1 of repr(model.remesh(CS4's kept model, 0.1)), the kept model without build.NAMED_PROPS[4] (Task 4's fix
 round 1: object 3, the big wheel's frame), as 0f0a36c's code computes it (git archive, its own empty cache): 13,263
 triangles, every object's re-mesh the same as before but object 3's 98 gone. Before the fix it was c38cb5e2...
-(5833095's, the set Task 3's gate measured)."""
+(5833095's, the set Task 3's gate measured). v0.1.1 moved it from fcea416f...: build.shadow_volumes also drops
+CS4's 23 volumes in per-volume ID colours (13:1-14, 45:0-4, 46:0-3), no longer re-meshed: 12,837 triangles out
+(16,543 in), within 0.0991 and 0.0998 both ways."""
 
 
 def test_remesh_cs4_bound(disc):  # noqa: F811

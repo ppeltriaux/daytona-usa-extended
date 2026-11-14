@@ -1512,10 +1512,11 @@ def _box(lo, hi) -> list:
 
 def _volumes_model():
     """A synthetic course for the Task 6 drops: object 0 a sky dome (radius 500, every vertex on it, textured); object
-    1 as large but with a vertex at its centre; object 2 a small sphere-like solid (radius 1); object 3's meshes: (0) a
-    black closed box, (1) a box stored red but in colour mode 3 after the black one (so black), (2) a red closed box,
-    (3) a black box less one face (open), (4) a black box drawn with a texture, (5) two black boxes meeting along one
-    edge (four triangles on it). Returns (model, its _TEX.BIN blob: one opaque 32 x 32 RGB565 texture)."""
+    1 as large but with a vertex at its centre; object 2 a small sphere-like solid (radius 1), all three kind 3;
+    object 3, kind 1 (CS4's 19:0's, so only a black mesh is a volume there; v0.1.1), its meshes: (0) a black closed
+    box, (1) a box stored red but in colour mode 3 after the black one (so black), (2) a red closed box, (3) a black box
+    less one face (open), (4) a black box drawn with a texture, (5) two black boxes meeting along one edge (four
+    triangles on it). Returns (model, its _TEX.BIN blob: one opaque 32 x 32 RGB565 texture)."""
     from tests.test_convert_model import V
     lst = pol.LIST_FLAG | 2
     octa = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
@@ -1528,8 +1529,8 @@ def _volumes_model():
             tri += [V(0, 0, 0), ps[0], ps[2]]
         return pol.Strip(lst, tuple(tri))
 
-    def obj(meshes, r):
-        return pol.Object(3, (0.0, 0.0, 0.0, float(r)), tuple(meshes),
+    def obj(meshes, r, kind=3):
+        return pol.Object(kind, (0.0, 0.0, 0.0, float(r)), tuple(meshes),
                           sum(len(st.entries) for me in meshes for st in me.strips))
 
     black, red = (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)
@@ -1542,7 +1543,7 @@ def _volumes_model():
               _dc_mesh(pol.Strip(lst, tuple(_box((60, 0, 10), (62, 3, 14)) + _box((62, 3, 10), (64, 5, 14)))), -1,
                        colour=black)]
     objects = (obj([_dc_mesh(solid(500.0), 0)], 500), obj([_dc_mesh(solid(500.0, True), 0)], 500),
-               obj([_dc_mesh(solid(1.0), 0)], 1), obj(meshes, 40))
+               obj([_dc_mesh(solid(1.0), 0)], 1), obj(meshes, 40, kind=1))
     hdr = (0x200, 0x20001117, 0x213342, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0)
     m = pol.fix_header(pol.Model(hdr, objects, (pol.TexEntry(32, 32, 0x101, 0, 0),)))
     return m, np.random.default_rng(5).integers(0, 0x10000, 32 * 32, dtype=np.uint16).tobytes()
@@ -1550,9 +1551,10 @@ def _volumes_model():
 
 def test_sky_domes_and_shadow_volumes():
     """Task 6 (docs/spike/2026-11-convert.md, "Desert City seen"): a sky dome is an object past SKY_RADIUS whose every
-    vertex lies on its bounding sphere (within SKY_SHELL); a shadow volume an untextured black mesh (its face colour,
-    colour mode 3 inheriting) whose triangles close (every edge an even number of them, two boxes meeting along an
-    edge included); kept_model drops them with the decals, keeping every other mesh and the object indices."""
+    vertex lies on its bounding sphere (within SKY_SHELL); a shadow volume an untextured mesh, black (its face colour,
+    colour mode 3 inheriting) or of a kind-3 object (v0.1.1: test_shadow_volumes_of_kind_3), whose triangles close
+    (every edge an even number of them, two boxes meeting along an edge included); kept_model drops them with the
+    decals, keeping every other mesh and the object indices. Object 3 is kind 1: its red closed box stays."""
     m, blob = _volumes_model()
     assert build.sky_domes(m) == (0,)
     assert build.shadow_volumes(m) == ((3, 0), (3, 1), (3, 5))
@@ -1573,6 +1575,42 @@ def test_sky_domes_and_shadow_volumes():
             build.sky_domes(bad)
     with pytest.raises(ConvertError):
         build.kept_model(m, None)
+
+
+def test_shadow_volumes_of_kind_3():
+    """v0.1.1 (14 Nov, out/debug/np-start/report.md): National Park Speedway (CS4) gives each of its shadow volumes a
+    per-volume ID colour (a grey ramp 0.05..0.9, some pinkish), Rin Rin Rink (CS6) one (0, 0.02, 0), not black; drawn
+    by the arcade they were flat grey and black walls. A shadow volume is an untextured closed mesh that is black or
+    belongs to an object of kind 3 (the kind of the Dreamcast's volumes and its sky domes). Object 0, a kind-3 textured
+    sky dome, is none; object 1 (kind 3): (0) a grey (0.6) closed box and (1) a near-black (0, 0.02, 0) one are
+    volumes, (2) a pink box drawn with a texture and (3) a grey box less one face (open) are not; object 2 (kind 1,
+    CS4's 19:0's): (0) a black closed box is one (the black rule kept), (1) a grey closed box is not."""
+    from tests.test_convert_model import V
+    lst = pol.LIST_FLAG | 2
+    octa = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+    faces = [(0, 2, 4), (2, 1, 4), (1, 3, 4), (3, 0, 4), (2, 0, 5), (1, 2, 5), (3, 1, 5), (0, 3, 5)]
+    dome = pol.Strip(lst, tuple(V(*(500.0 * x for x in octa[i])) for f in faces for i in f))
+
+    def obj(kind, meshes, r):
+        return pol.Object(kind, (0.0, 0.0, 0.0, float(r)), tuple(meshes),
+                          sum(len(st.entries) for me in meshes for st in me.strips))
+
+    def box(x0, n=12):
+        return pol.Strip(lst, tuple(_box((x0, 0, 10), (x0 + 2, 3, 14))[:3 * n]))
+
+    grey, green, pink, black = (0.6, 0.6, 0.6), (0.0, 0.02, 0.0), (0.65, 0.35, 0.65), (0.0, 0.0, 0.0)
+    objects = (obj(3, [_dc_mesh(dome, 0)], 500),
+               obj(3, [_dc_mesh(box(10), -1, colour=grey), _dc_mesh(box(20), -1, colour=green),
+                       _dc_mesh(box(30), 0, colour=pink), _dc_mesh(box(40, 10), -1, colour=grey)], 40),
+               obj(1, [_dc_mesh(box(50), -1, colour=black), _dc_mesh(box(60), -1, colour=grey)], 70))
+    hdr = (0x200, 0x20001117, 0x213342, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0)
+    m = pol.fix_header(pol.Model(hdr, objects, (pol.TexEntry(32, 32, 0x101, 0, 0),)))
+    assert build.sky_domes(m) == (0,)
+    assert build.shadow_volumes(m) == ((1, 0), (1, 1), (2, 0))
+    blob = np.random.default_rng(5).integers(0, 0x10000, 32 * 32, dtype=np.uint16).tobytes()
+    kept = build.kept_model(m, blob)
+    assert kept.objects[0].meshes == ()
+    assert kept.objects[1].meshes == m.objects[1].meshes[2:] and kept.objects[2].meshes == m.objects[2].meshes[1:]
 
 
 def _props_model():

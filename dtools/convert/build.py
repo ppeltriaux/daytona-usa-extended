@@ -465,11 +465,18 @@ def sky_domes(m) -> tuple[int, ...]:
     return tuple(out)
 
 
+VOLUME_KIND = 3
+"""The object kind word of the Dreamcast's shadow volumes (and its sky domes, which are textured): v0.1.1, out/debug/
+np-start/report.md. National Park Speedway (CS4) colours each volume with a per-volume ID (a grey ramp, some pinkish)
+and Rin Rin Rink (CS6) one (0, 0.02, 0), so black alone misses them."""
+
+
 def shadow_volumes(m) -> tuple[tuple[int, int], ...]:
     """The meshes of `m` that are shadow volumes (Phase 7 Task 6, "Desert City seen"): untextured, black (face colour
-    (0, 0, 0), `_face_colours`) and closed (every edge of its non-degenerate triangles, positions rounded to
-    VOLUME_GRID, shared by an even number of them: two, or four where two volumes meet along it, as three edges of
-    Desert City's 35:0; at least six edges, a tetrahedron's). On the Dreamcast these enclose the road and the
+    (0, 0, 0), `_face_colours`) or of an object of kind VOLUME_KIND (v0.1.1: CS4's 23 and CS6's 5 volumes are not
+    black; the black test stays for CS4's 19:0, a kind-1 object) and closed (every edge of its non-degenerate
+    triangles, positions rounded to VOLUME_GRID, shared by an even number of them: two, or four where two volumes meet
+    along it, as three edges of Desert City's 35:0; at least six edges, a tetrahedron's). On the Dreamcast these enclose the road and the
     shoulders where a cliff or a wall casts its shadow and are not seen (the PowerVR's modifier volumes darken what
     lies inside them); drawn as polygons by the arcade, which sorts polygons instead of testing depth, they are black
     walls standing across the road. (object, mesh) pairs, ascending. ConvertError as `sky_domes`."""
@@ -479,7 +486,8 @@ def shadow_volumes(m) -> tuple[tuple[int, int], ...]:
     edges: dict[tuple[int, int], dict] = {}
     for (a, b, c, _), key in zip(pol.triangles(m), where):
         me = meshes[key]
-        if me.texture != pol.NO_TEXTURE or face[id(me)] != (0.0, 0.0, 0.0):
+        if me.texture != pol.NO_TEXTURE or (face[id(me)] != (0.0, 0.0, 0.0)
+                                            and m.objects[key[0]].kind != VOLUME_KIND):
             continue
         t = [tuple(round(float(v) / VOLUME_GRID) for v in (p.x, p.y, p.z)) for p in (a, b, c)]
         e = edges.setdefault(key, {})
