@@ -22,6 +22,7 @@
 -- Runs tgp_trace.lua when DAYTONA_TGP_LOG is set (see there; refused with DAYTONA_TRACE_LOG and DAYTONA_GROUND_LOG).
 -- Runs geo_log.lua when DAYTONA_GEO_LOG is set and renderrate.lua when DAYTONA_RATE_LOG is set (from DAYTONA_LUA_DIR).
 -- Runs cells_log.lua when DAYTONA_CELLS_LOG is set (see there; refused with DAYTONA_TRACE_LOG).
+-- Runs pit_log.lua when DAYTONA_PIT_LOG is set (see there).
 -- Runs title_log.lua when DAYTONA_TITLE_LOG is set (see there).
 --
 -- What the game does (measured 2026-11-07, MAME 0.289, fresh NVRAM; snapshots read by eye):
@@ -55,6 +56,7 @@ if os.getenv("DAYTONA_TGP_LOG") and lua_dir then dofile(lua_dir .. "/tgp_trace.l
 if os.getenv("DAYTONA_GEO_LOG") and lua_dir then dofile(lua_dir .. "/geo_log.lua") end
 if os.getenv("DAYTONA_RATE_LOG") and lua_dir then dofile(lua_dir .. "/renderrate.lua") end
 if os.getenv("DAYTONA_CELLS_LOG") and lua_dir then dofile(lua_dir .. "/cells_log.lua") end
+if os.getenv("DAYTONA_PIT_LOG") and lua_dir then dofile(lua_dir .. "/pit_log.lua") end
 if os.getenv("DAYTONA_TRACE_LOG") and lua_dir then
   if os.getenv("DAYTONA_GEO_LOG") or os.getenv("DAYTONA_RATE_LOG") then
     error("DAYTONA_TRACE_LOG cannot be combined with DAYTONA_GEO_LOG or DAYTONA_RATE_LOG")

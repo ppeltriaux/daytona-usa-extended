@@ -46,6 +46,16 @@ docs/formats/model2-polygon-rom.md):
 - cells: a polygon goes to the cell of its corners' centroid (`cell_of`): Beginner's polygons cross cell edges
   freely (555 of 5,091 have a corner in another cell) and 5,062 have their centroid in their object's cell (the 29
   others at most 2.3 units out).
+- long polygons cut on the cell grid (`cell_cut`, per course: build.CELL_CUT; v0.1.2): the game draws a cell's
+  objects only when its view test opens that cell, so a polygon reaching far past the cell it is filed under leaves a
+  hole where it lies in an open cell next to a closed one (Mermaid Lake's start straight, single road strips about
+  232 units long filed one cell ahead of the grid: the backdrop showed through during the start's fly-by,
+  docs/follow-ups/v0.1.2.md). A polygon reaching more than `cell_cut` units past its own cell (`overhang`) is cut along
+  every cell edge it crosses (x or z = CELL * j - 1024.5, where `cell_of`'s rounding changes cell), as the texture
+  point cut does: each cut point interpolated along its edge from the edge's ends in coordinate order (neighbours cut
+  too agree), its coordinate on the cut axis exactly the edge's, (u, v) interpolated; slices fanned into quads and a
+  last triangle; each piece filed under its own centroid's cell. A neighbour that is not cut keeps the whole edge (a
+  T-junction).
 - records (Beginner's attribute bits): a drawn polygon is a triangle (attr & 3 == 2) or a quad (1); link (bits 8-9,
   copied into bits 23-24 as on every Beginner record), z-sort 2 (max z), texture-header step 1 (one header per drawn
   polygon), bit 17 double-sided, texture parameter TEX_PARAM, distance coefficient `lod_coef` of the polygon's
@@ -91,6 +101,9 @@ CELL = 128
 """A scenery cell's edge, world units (course.CELL_UNITS): 16 x 16 cells from GRID_ORIGIN -1024."""
 WORLD = (-1024, 1023)
 """Every converted vertex's x and z (inclusive): `cell_of` does not wrap inside it (ground.WORLD)."""
+CELL_EDGES = tuple(CELL * j - 1024.5 for j in range(17))
+"""The x (and z) where `cell_of` changes cell: it rounds to nearest, so the edge between columns j - 1 and j lies at
+CELL * j - 1024 - 0.5."""
 MAX_RECORDS = C.OBC
 """Records per object at most: the object count (obc) the draw routines send with every object, 5,000 (course.OBC);
 the parser stops after it. Each object's list entry also adds its record count (its `budget`, entry word 3, equal to
@@ -461,6 +474,67 @@ def _slices(corners: list, uvs: list, k: int, step: int) -> list[tuple[list, lis
     return out
 
 
+def overhang(corners) -> float:
+    """How far (world units, the largest of the four sides) the polygon with these arcade corners reaches past the
+    cell of its centroid (`cell_of`'s cell, edges CELL_EDGES); 0.0 when it lies inside."""
+    c = np.asarray(corners, dtype=float)
+    cell = cell_of(float(c[:, 0].mean()), float(c[:, 2].mean()))
+    x0, z0 = CELL_EDGES[cell & 15], CELL_EDGES[cell >> 4]
+    return float(max(0.0, x0 - c[:, 0].min(), c[:, 0].max() - (x0 + CELL),
+                     z0 - c[:, 2].min(), c[:, 2].max() - (z0 + CELL)))
+
+
+def _cell_slices(corners: list, uvs: list, k: int) -> list[tuple[list, list]]:
+    """The convex polygon (corners, uvs) cut along world axis k (0 x, 2 z) at every cell edge (CELL_EDGES) strictly
+    inside it: its slices in coordinate order, each (corners, uvs) in the polygon's order (the module docstring's
+    rule, as `_slices` cuts on a texture axis)."""
+    s = [float(c[k]) for c in corners]
+    cuts = [e for e in CELL_EDGES if min(s) < e < max(s)]
+    if not cuts:
+        return [(corners, uvs)]
+    n, ring = len(corners), []
+    for i in range(n):
+        j = (i + 1) % n
+        ring.append((s[i], corners[i], uvs[i]))
+        a, b = (i, j) if s[i] < s[j] else (j, i)        # the ends in coordinate order: a neighbour cut too agrees
+        on = []
+        for e in (e for e in cuts if s[a] < e < s[b]):
+            t = (e - s[a]) / (s[b] - s[a])
+            point = tuple(float(e) if q == k else float(x + t * (y - x))
+                          for q, (x, y) in enumerate(zip(corners[a], corners[b])))
+            uv = tuple(float(x + t * (y - x)) for x, y in zip(uvs[a], uvs[b]))
+            on.append((float(e), point, uv))
+        ring += on if a == i else on[::-1]
+    out = []
+    bounds = [-math.inf] + cuts + [math.inf]
+    for lo, hi in zip(bounds, bounds[1:]):
+        sel = [(c, u) for v, c, u in ring if lo <= v <= hi]
+        sel = [q for i, q in enumerate(sel) if q[0] != sel[i - 1][0]] if len(sel) > 1 else sel
+        if len(sel) >= 3:
+            out.append(([c for c, _ in sel], [u for _, u in sel]))
+    return out
+
+
+def _cell_cut(p: _Poly, reach: float | None, sizes) -> list[_Poly]:
+    """`p`, or its pieces cut on the cell grid when it reaches more than `reach` units past its own cell
+    (`overhang`; None cuts nothing): the module docstring's rule."""
+    if reach is None or overhang(p.corners) <= reach:
+        return [p]
+    parts = [(list(p.corners), list(p.uvs))]
+    for k in (0, 2):
+        parts = [q for c, u in parts for q in _cell_slices(c, u, k)]
+    out = []
+    for corners, uvs in parts:
+        for idx in ([0, i, i + 1, i + 2] if i + 2 < len(corners) else [0, i, i + 1]
+                    for i in range(1, len(corners) - 1, 2)):
+            c, u = tuple(corners[i] for i in idx), tuple(uvs[i] for i in idx)
+            if not _newell(c).any():
+                continue                                # a sliver with no area
+            coef = _coef(c, u, sizes[p.texture]) if p.texture >= 0 else p.coef
+            out.append(_Poly(c, u, p.texture, p.double, coef, p.sources))
+    return out
+
+
 def _cut(p: _Poly, points: dict | None, sizes) -> list[_Poly]:
     """`p`, or its pieces when its texture points would pass their range on the converted texture (`points`:
     texture -> (width, height); `convert_model`'s rule). ConvertError for a texture too small a band for even two
@@ -645,7 +719,7 @@ def _without(m: pol.Model, drop: set) -> pol.Model:
     return pol.Model(m.header, tuple(objects), m.textures)
 
 
-def convert_model(m, quad=None, points=None) -> dict[int, tuple[Piece, ...]]:
+def convert_model(m, quad=None, points=None, cell_cut=None) -> dict[int, tuple[Piece, ...]]:
     """The course model `m` as polygon objects per scenery cell: cell (row << 4 | col) -> its Pieces (one object
     each, at most MAX_RECORDS records; several when the cell has more), only the cells that hold a polygon. Every
     non-degenerate triangle of `pol.triangles(m)` is drawn by exactly one record of one Piece (`Piece.sources`), or by
@@ -666,7 +740,13 @@ def convert_model(m, quad=None, points=None) -> dict[int, tuple[Piece, ...]]:
     its headers'), with which a polygon whose texture points would pass their u16 range is cut (the module docstring,
     "texture points past their range"; Phase 11 Task 3); None (or a texture not named) cuts nothing. ConvertError
     also for `points` that is neither None nor a dict of texture indices to two positive ints, and for a polygon that
-    cannot be cut to fit."""
+    cannot be cut to fit.
+
+    `cell_cut`: per course (build.CELL_CUT; v0.1.2), the world units a polygon may reach past its own cell before it
+    is cut on the cell grid (the module docstring, "long polygons cut on the cell grid"), after the texture point cut;
+    None cuts nothing. ConvertError also for a `cell_cut` that is neither None nor a finite number >= 0."""
+    if cell_cut is not None and not (is_number(cell_cut) and math.isfinite(cell_cut) and cell_cut >= 0):
+        raise ConvertError(f"cell_cut {cell_cut!r:.40} is not a finite number of world units >= 0")
     if points is not None and not (isinstance(points, dict) and all(
             is_int(t) and isinstance(v, tuple) and len(v) == 2 and all(is_int(x) and x > 0 for x in v)
             for t, v in points.items())):
@@ -674,7 +754,7 @@ def convert_model(m, quad=None, points=None) -> dict[int, tuple[Piece, ...]]:
     polys = _polygons(m, _quad(quad))
     sizes = [(int(t.width), int(t.height)) for t in m.textures]
     cells: dict[int, list[_Poly]] = defaultdict(list)
-    for p in (q for p0 in polys for q in _cut(p0, points, sizes)):
+    for p in (r for p0 in polys for q in _cut(p0, points, sizes) for r in _cell_cut(q, cell_cut, sizes)):
         c = np.asarray(p.corners, dtype=float)
         cells[cell_of(float(c[:, 0].mean()), float(c[:, 2].mean()))].append(p)
     return {cell: _pieces(cells[cell]) for cell in sorted(cells)}

@@ -153,6 +153,48 @@ def park_id4(disc):  # noqa: F811
     return base, sd, c, out
 
 
+def test_race_times_writes_in_place(park_id4, monkeypatch):
+    """build.race_times (v0.1.2): every time table of the Course is rewritten word for word in place (same addresses,
+    same lengths), the decoded course reads the new words and passes golden.check_course, and only those words change;
+    a missing or extra key, a wrong length, a bad word, a table shared with different words, or a course with no
+    RACE_TIMES entry is a ConvertError."""
+    _, _, _, out = park_id4
+    c = G.decode_course(out, 4)
+    tables = {key: tuple(1000 + 10 * key[0] + key[1] + i for i in range(len(w))) for key, (_, _, w) in c.time_tables.items()}
+    new = build.race_times(out, c, tables)
+    back = G.decode_course(new, 4)
+    assert {k: v[2] for k, v in back.time_tables.items()} == tables
+    assert {k: v[:2] for k, v in back.time_tables.items()} == {k: v[:2] for k, v in c.time_tables.items()}
+    G.check_course(back, new)
+    assert (new.program, new.polygons, new.textures) == (out.program, out.polygons, out.textures)
+    changed = np.flatnonzero(np.frombuffer(new.data, np.uint8) != np.frombuffer(out.data, np.uint8))
+    spans = {t - DATA_BASE + i for _, t, w in c.time_tables.values() for i in range(4 * len(w))}
+    assert changed.size and set(changed.tolist()) <= spans
+    key = next(iter(tables))
+    for bad in ({k: v for k, v in tables.items() if k != key}, {**tables, (9, 9): (1,)},
+                {**tables, key: tables[key][:-1]}, {**tables, key: (0,) + tables[key][1:]},
+                {**tables, key: (True,) + tables[key][1:]}, {**tables, key: (1 << 32,) + tables[key][1:]}):
+        with pytest.raises(ConvertError):
+            build.race_times(out, c, bad)
+    frozen = G.decode_course(build.race_times(out, c), 4)          # the default: RACE_TIMES[4], expanded per table
+    assert {k: v[2] for k, v in frozen.time_tables.items()} == {
+        k: build.race_table(*build.RACE_TIMES[4][k], len(v[2])) for k, v in c.time_tables.items()}
+    assert build.race_table(5, (1, 2), 5) == (5, 1, 2, 1, 2)
+    for n in (4, 2, 1):
+        with pytest.raises(ConvertError):
+            build.race_table(5, (1, 2), n)
+    monkeypatch.setattr(build, "RACE_TIMES", {})
+    with pytest.raises(ConvertError):
+        build.race_times(out, c)                    # no RACE_TIMES entry for the course
+    shared = dataclasses.replace(c, time_tables={k: (p, next(iter(c.time_tables.values()))[1], w)
+                                                 for k, (p, _, w) in c.time_tables.items()})
+    with pytest.raises(ConvertError):
+        build.race_times(out, shared, tables)
+    for bad in ((None, c, tables), (out, None, tables)):
+        with pytest.raises(ConvertError):
+            build.race_times(*bad)
+
+
 def test_converted_id4_round_trip(park_id4):
     """National Park Speedway as course id 4, after Desert City on the chain (Review Focus 4 and 5 as id 3's):
 
@@ -369,7 +411,7 @@ def test_remeshed_cache_leaves_no_tmp(tmp_path, monkeypatch):
 
 # ---- Phase 10 Task 4: Mermaid Lake (n 7) at id 7 (discovery log docs/spike/2026-11-courses-4-7.md, "Mermaid Lake") --
 
-LAKE_DECALS, LAKE_DOMES = (112,), (0, 1)
+LAKE_DECALS, LAKE_DOMES = (67, 112), (0, 1)
 LAKE_VOLUMES = ((132, 0), (132, 1), (132, 2), (132, 3), (132, 4), (134, 0), (134, 1), (137, 0), (140, 0), (142, 0),
                 (145, 0), (162, 0))
 LAKE_FLAGS = (tuple(range(3, 67)), tuple(range(67, 131)))
@@ -391,7 +433,7 @@ build.NAMED_PROPS[7]."""
 
 def test_cs7_origin_props(disc):  # noqa: F811
     """CS7 (Mermaid Lake) as the scenery draws it (kept_model with the course, so past the road guard, and
-    NAMED_PROPS[7]): the decal texture, the two sky domes, twelve shadow volumes (v0.1.1:
+    NAMED_PROPS[7]): the decal textures (v0.1.2 adds 67, the shadow nearly one colour), the two sky domes, twelve shadow volumes (v0.1.1:
     132:1-4, kind 3, in a prop already dropped) and the run-time props are dropped.
 
     - the origin rule finds 130 objects (LAKE_PROPS), and they are props: two flag animations of 64 frames each
@@ -450,8 +492,9 @@ def test_cs7_origin_props(disc):  # noqa: F811
             build.kept_model(m, blob, d, props=bad)
 
 
-LAKE_ROAD_TRIANGLES = 4498
-"""build.road_triangles of CS7's kept model (never thinned), plain or lifted."""
+LAKE_ROAD_TRIANGLES = 4217
+"""build.road_triangles of CS7's kept model (never thinned), plain or lifted. v0.1.2: 4,498 before; the 281 gone are
+the shadow decal 67's triangles on the road (build.decals' nearly-one-colour rule)."""
 LIFT_HEIGHT_TOL = 0.005
 """Task 2's tolerance for a converted ground's height (docs/spike/2026-11-courses-4-7.md, "The tolerance, stated
 before measuring"): the lifted ground's answer less LIFT against the plain ground's (measured 8.4e-5 by the review)."""
@@ -579,7 +622,7 @@ def lake_id7(disc):  # noqa: F811
     mn, tn = course_files(7, kind="model"), course_files(7, kind="textures")
     sd = build.model_scenery(base, d, build.lifted_model(pol.decode_pol(disc.read(mn), mn), lift), disc.read(tn),
                              build.THIN.get(7), slot=7, quad=build.QUAD.get(7), remesh=build.REMESH.get(7),
-                             props=build.NAMED_PROPS[7])
+                             props=build.NAMED_PROPS[7], cell_cut=build.CELL_CUT.get(7))
     c = build.converted_course(base, d, exe, 7, slot=7, scenery="model", scenery_data=sd)
     out = build.converted_set(base, disc, 7, slot=7, scenery="model")
     return base, sd, c, out
@@ -617,7 +660,7 @@ def test_converted_id7_round_trip(lake_id7, disc):  # noqa: F811
     assert c.rolling_start[1] is False and c.grid_base[1] == build.GRID_BASES[7] == 493
     assert len(c.road) - 1 == 499 and [cp.segment for cp in c.checkpoints] == [120, 363, 0]
     assert c.actor_table == build.EMPTY_ACTORS and build.CONVERTED_IDS[:3] == (3, 4, 7)
-    assert 7 not in build.QUAD and 7 not in build.REMESH and 7 not in build.THIN
+    assert build.QUAD[7] == (10.0, 0.125) and 7 not in build.REMESH and 7 not in build.THIN   # v0.1.2: QUAD for CELL_CUT
     dc = _data(disc, 7)
     for r0, r1 in zip(dc.road, c.road):
         for j in range(r0.lane_lo, r0.lane_hi + 1):
@@ -722,11 +765,11 @@ def test_final_set_with_id7(disc):  # noqa: F811
 
 # ---- Phase 10 Task 5: the mirrors of National Park Speedway (id 12) and Mermaid Lake (id 15) on the final set ----
 
-FINAL_SHA1_T4 = {"program": "343c344579a506eb3c40c1ddeda7fddd736138ef",
-                 "data": "d80bfee82ed81d315a3cbb5fa520547ee9aff257",
+FINAL_SHA1_T4 = {"program": "4f376c906defb9e64a006a6527fe6aaa6560132e",
+                 "data": "e3bdbf50414cd010df34fd475c1df7227f3fd7d8",
                  "copro_data": "34229d4fbcbfb2efe041417bef8b7abb66466214",
-                 "polygons": "3a9c938622784262f7e6b4ba84aea6fb36c17bdf",
-                 "textures": "e737a5b0cb3774e881b781451a896d29c5b2347c"}
+                 "polygons": "18194128c4910eefa0adb7904edf62ea56bbf615",
+                 "textures": "7ada6ea7c82d015053d900f294b0b7a178bc2f84"}
 """Task 4's final set (tests/test_mirrors_mame.py `task4_set`: Desert City at 3, National Park Speedway at 4, Mermaid
 Lake at 7, the mirrors of 0-3, the rankings, the select with TASK4_ENTRIES), the sha1 of each region, built
 independently of the code under test: c7a4855's code (git archive into a scratch folder, its own empty re-mesh cache,
@@ -736,7 +779,10 @@ rejected on this Mac, now merge), built by 5b970ee's code from a git archive (fr
 out/phase13/r2/pins.txt); linux/amd64 builds the same bytes. v0.1.1 repinned it (data, polygons, textures; program and copro_data unchanged): build.shadow_volumes
 also takes an untextured closed mesh of a kind-3 object (CS4's 23 volumes in per-volume ID colours), built by the code
 under test; the release pin, test_release.py RELEASE_SHA1, matches an independent build of v0.1's code with only that
-rule patched in (out/debug/np-start/fixset.py)."""
+rule patched in (out/debug/np-start/fixset.py). v0.1.2 repinned it (data, polygons, textures; program and copro_data unchanged): build.decals also drops a
+texture nearly one colour (DECAL_SHARE, DECAL_STEP: Mermaid Lake's and Circuit Pixie's shadow 67), built by the code
+under test; the release pin, test_release.py RELEASE_SHA1, matches an independent build of v0.1.1's code with only that
+rule patched in (out/debug/lake/fixset.py). v0.1.2's lake fix repinned it: build.CELL_CUT cuts Mermaid Lake's long scenery polygons on the cell grid (its start straight was not drawn during the start's fly-by) and build.QUAD[7] merges its quads as on 4-6, so the lap stays in budget; only CS7's scenery changes (program too: the mirrors' tables placed after it move; copro_data unchanged)."""
 
 
 def test_shipped_row_is_eight(disc):  # noqa: F811
@@ -1637,10 +1683,10 @@ def test_cs5_levers(disc):  # noqa: F811
 # ---- Phase 11 Task 5: the shipped set pinned ----
 
 M5B_SHA1 = {"program": "c13354b25ce3d067864b232241618eceeee72b7e",
-            "data": "f398e474aecb00c608ad26bec04ba4e98d2b1ec8",
+            "data": "a8029a2520351879944c1c545d05319ecf8f55b8",
             "copro_data": "06e8923fa71bf8f5935b89c746058e3910f2396f",
-            "polygons": "9aa08c3499524d2b92091d8fd6c6bc87cbe25978",
-            "textures": "d1fd0824e1f6d9744f33176508c1bcc9e1fe9f6e"}
+            "polygons": "87b912f2b4fd7fa15103bfaad96375bd59c38f1b",
+            "textures": "428a5540d09d18f2d7b6cd5e22d436a322881cbc"}
 """Phase 11's shipped set (M5b; tests/test_courses_mame.py `m5b_set`: grow, guard, widen, ids 3, 4, 7, 6 and 5
 converted, the rankings, the select with the row of eight, then `build.viewed_set`), the sha1 of each region, built
 independently of the code under test: fd5703f's code (Task 4's last commit; git archive into a scratch folder, its own
@@ -1652,7 +1698,10 @@ now merge), built by 5b970ee's code from a git archive (fresh venv, Python 3.15.
 out/phase13/r2/pins.txt); linux/amd64 builds the same bytes. v0.1.1 repinned it (data, polygons, textures; program and copro_data unchanged): build.shadow_volumes
 also takes an untextured closed mesh of a kind-3 object (CS4's 23 and CS6's 5 volumes not black), built by the code
 under test; the release pin, test_release.py RELEASE_SHA1, matches an independent build of v0.1's code with only that
-rule patched in (out/debug/np-start/fixset.py)."""
+rule patched in (out/debug/np-start/fixset.py). v0.1.2 repinned it (data, polygons, textures; program and copro_data unchanged): build.decals also drops a
+texture nearly one colour (DECAL_SHARE, DECAL_STEP: Mermaid Lake's and Circuit Pixie's shadow 67), built by the code
+under test; the release pin, test_release.py RELEASE_SHA1, matches an independent build of v0.1.1's code with only that
+rule patched in (out/debug/lake/fixset.py). v0.1.2's lake fix repinned it: build.CELL_CUT cuts Mermaid Lake's long scenery polygons on the cell grid (its start straight was not drawn during the start's fly-by) and build.QUAD[7] merges its quads as on 4-6, so the lap stays in budget; only CS7's scenery changes (data, polygons, textures; program and copro_data unchanged)."""
 
 
 def test_m5b_set_pinned(disc):  # noqa: F811

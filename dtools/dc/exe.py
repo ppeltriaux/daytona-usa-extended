@@ -1,4 +1,5 @@
-"""The Dreamcast executable `1ST_READ.BIN`: its checkpoint table, a lossless reader and encoder.
+"""The Dreamcast executable `1ST_READ.BIN`: its checkpoint table, a lossless reader and encoder; its pit stalls, a
+reader.
 
 The executable loads at `EXE_BASE` (address = file offset + 0x8C010000). The checkpoint table (docs/formats/
 dreamcast-disc.md, "Executable tables"; found by searching for the arcade's checkpoint segments, Phase 5) is:
@@ -23,12 +24,30 @@ What each word means was confirmed by its values, not traced in the running game
   at 0x8c035aa8) and indexes it by a byte at 0x8c292e98, masked, times 4 (static reading of the SH-4 code).
 
 Every malformed input is a `DcError` naming the entry or the list and the offset; the encoder refuses what the
-layout cannot hold, so whatever decodes re-encodes byte for byte."""
+layout cannot hold, so whatever decodes re-encodes byte for byte.
+
+The pit stalls (v0.1.2; found by searching for the arcade's, course.pit_stalls, by their speeds 150, 100, 60): the
+waypoints the pit stop steers the player's car through, the arcade's CAR_TABLES_230E50 lists without the pad word.
+
+- `PIT_GROUPS` x `PIT_STALLS` u32 pointers at file offset `PIT_POINTERS` (0x17e2ec, address 0x8c18e2ec): group g's
+  stall k (one per car ident, a linked cabinet's) at index PIT_STALLS * g + k.
+- each pointer names `PIT_WAYPOINTS` records of x, z, speed f32 (12 bytes), packed in pointer order up to the
+  pointer table (0x17ba3c-0x17e2eb on the disc).
+- the groups go in pairs, a course's plain stalls then its R stalls (the same lane run the other way), the pairs in
+  the order Beginner, Advanced, Expert, then courses 3-7 (`PIT_PAIRS[n]` is course n's pair; Expert is n 1).
+
+Confirmed by value, not traced in the running game: the plain groups of courses 0-2 are the arcade's stalls value for
+value, in the arcade's coordinates (the courses' x, z as the converter writes them: the data files' z negated); the
+plain groups of 3-7 lie on the converted courses' pit lanes and run with the race, the R groups against it
+(tests/test_release.py `test_release_pit_stalls`). A few stalls repeat others (National Park Speedway's 4-7 are 0-3)
+and one ends at (0, 0) (Desert City's stall 4, after its stop): kept as the disc has them."""
 
 from __future__ import annotations
 
 import struct
+import math
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from dtools.arcade.tablebase import _int, _seq
 from dtools.dc.disc import COURSE_COUNT, VARIANTS
@@ -39,6 +58,14 @@ EXE_BASE = 0x8C010000               # load address: address = file offset + EXE_
 ENTRIES = 32                        # 8 courses x 4 variants: entry e = 8 * VARIANTS.index(v) + n
 CHECKPOINT_POINTERS = 0x17E99C      # file offset of the 32 u32 pointers (address 0x8c18e99c)
 CHECKPOINT_END = CHECKPOINT_POINTERS + 4 * ENTRIES
+PIT_POINTERS = 0x17E2EC             # file offset of the pit stalls' u32 pointers (address 0x8c18e2ec)
+PIT_GROUPS = 16                     # 8 courses x (plain, R)
+PIT_STALLS = 8                      # per group: one per car ident (car +0x4 & 7 on the arcade)
+PIT_WAYPOINTS = 7                   # per stall
+PIT_RECORD = 12                     # x, z, speed f32
+PIT_END = PIT_POINTERS + 4 * PIT_GROUPS * PIT_STALLS
+PIT_PAIRS = (0, 2, 1, 3, 4, 5, 6, 7)
+"""Course n's pair of pit groups (plain 2 * PIT_PAIRS[n], R the next): Beginner, Advanced, Expert, then 3-7."""
 
 
 @dataclass(frozen=True)
@@ -48,6 +75,13 @@ class CheckpointTable:
     entries (0, 1, ..., 15) twice. Encoded, the lists are packed from the first and the pointers follow them."""
     lists: tuple[tuple[int, ...], ...]
     entries: tuple[int, ...]
+
+
+class PitWaypoint(NamedTuple):
+    """One waypoint of a pit stall: where the car steers (x, z, world units) and the speed it is set to there."""
+    x: float
+    z: float
+    speed: float
 
 
 def _bytes(blob) -> bytes | bytearray:
@@ -150,3 +184,45 @@ def verify_lossless_checkpoints(disc) -> list[str]:
         k = next(k for k, (a, c) in enumerate(zip(have, back)) if a != c)
         return [f"{EXE_NAME}: checkpoint table differs at offset {CHECKPOINT_END - len(back) + k:#x}"]
     return []
+
+
+def decode_pit_stalls(exe) -> tuple[tuple[tuple[PitWaypoint, ...], ...], ...]:
+    """The pit stalls of `exe` (the bytes of 1ST_READ.BIN): PIT_GROUPS groups of PIT_STALLS stalls of PIT_WAYPOINTS
+    waypoints. DcError for a file too short for the pointer table, a pointer that is not a 4-aligned address whose
+    PIT_WAYPOINTS records end at or before the pointer table, or a value that is not finite."""
+    b = _bytes(exe)
+    if len(b) < PIT_END:
+        raise DcError(f"{EXE_NAME}: the file is {len(b):#x} bytes; the pit pointer table at {PIT_POINTERS:#x} needs "
+                      f"{PIT_END:#x}")
+    need = PIT_WAYPOINTS * PIT_RECORD
+    groups = []
+    for g in range(PIT_GROUPS):
+        stalls = []
+        for k in range(PIT_STALLS):
+            at = PIT_POINTERS + 4 * (PIT_STALLS * g + k)
+            p = struct.unpack_from("<I", b, at)[0]
+            off = p - EXE_BASE
+            if not 0 <= off <= PIT_POINTERS - need or off % 4:
+                raise DcError(f"{EXE_NAME}: pit group {g}, stall {k}: pointer {p:#x} (at offset {at:#x}) is not a "
+                              f"4-aligned address of {need} bytes before the pointer table ({EXE_BASE:#x}.."
+                              f"{EXE_BASE + PIT_POINTERS - need:#x})")
+            pts = []
+            for j in range(PIT_WAYPOINTS):
+                w = PitWaypoint(*struct.unpack_from("<3f", b, off + PIT_RECORD * j))
+                if not all(math.isfinite(v) for v in w):
+                    raise DcError(f"{EXE_NAME}: pit group {g}, stall {k}, waypoint {j} (offset "
+                                  f"{off + PIT_RECORD * j:#x}): {tuple(w)} is not finite")
+                pts.append(w)
+            stalls.append(tuple(pts))
+        groups.append(tuple(stalls))
+    return tuple(groups)
+
+
+def pit_stalls(exe, n: int, v: str = "") -> tuple[tuple[PitWaypoint, ...], ...]:
+    """Course n's (0-7) pit stalls in `exe` (the bytes of 1ST_READ.BIN): its plain group (v `""`) or its R group (v
+    `"R"`), PIT_STALLS stalls of PIT_WAYPOINTS waypoints. DcError for an n outside 0-7, a v other than those, or a
+    table decode_pit_stalls refuses."""
+    n = _int(n, "course", 0, COURSE_COUNT - 1, "pit stalls", DcError)
+    if not isinstance(v, str) or v not in ("", "R"):
+        raise DcError(f"pit stalls: variant {v!r} is not one of ('', 'R')")
+    return decode_pit_stalls(exe)[2 * PIT_PAIRS[n] + (v == "R")]

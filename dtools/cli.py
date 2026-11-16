@@ -63,9 +63,9 @@ def _build(roms: Path, disc: Path, out: Path, checks: list[str]) -> int:
         print(f"build failed: {_one_line(e)}", file=sys.stderr)
         return 1
     print(f"built {path} in {time.monotonic() - start:.0f} s; report: {out / release.REPORT}")
-    print("run it from the repository root, with the custom MAME:")
+    print(release.run_from())
     print(f"  {release.mame_command(out)}")
-    print(f"note: {release.CUSTOM_NOTE}")
+    print(f"note: {release.custom_note()}")
     return 0
 
 

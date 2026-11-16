@@ -16,3 +16,20 @@ def road_file(c, path: Path) -> Path:
     path.write_text("".join("%.4f %.4f\n" % tuple(np.mean([ln.position for ln in rp.lanes[rp.lane_lo:rp.lane_hi + 1]],
                                                           axis=0)[[0, 2]]) for rp in c.road))
     return path
+
+
+def pit_road_file(c, ground, path: Path) -> Path:
+    """`path` as road_file writes it for the course `c` (a golden.Course; `ground` its tgp.Ground), except on the pit
+    lane: each segment that has pit polygons (lane or box, c.pit, from the step table) gets their centres' mean
+    instead, so the autopilot takes the pit lane and drives onto the box (v0.1.2's pit-stop test; spike/pit_drive.py);
+    returns `path`."""
+    path = Path(path)
+    pts = [tuple(np.mean([ln.position for ln in rp.lanes[rp.lane_lo:rp.lane_hi + 1]], axis=0)[[0, 2]]) for rp in c.road]
+    by_seg: dict[int, list] = {}
+    for i in c.pit.lane_polygons + (c.pit.box_polygon,):
+        p = ground.polys[i]
+        by_seg.setdefault(c.steps[i].segment, []).append(p.centre or tuple(np.mean(p.corners, axis=0)))
+    for s, cs in by_seg.items():
+        pts[s] = tuple(np.mean(cs, axis=0)[[0, 2]])
+    path.write_text("".join("%.4f %.4f\n" % xz for xz in pts))
+    return path

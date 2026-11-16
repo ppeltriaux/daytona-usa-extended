@@ -3,7 +3,7 @@ recorders (no game data); with the data, the release set against the M5b playtes
 `m5b_set`): the same chain but for the select's row and the title, so every byte that differs is one patch_select or
 title.extended_title writes."""
 
-import struct
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -31,26 +31,35 @@ def _inputs() -> tuple[RomSet, DcDisc]:
 def _record_long_times(monkeypatch, calls: list) -> None:
     monkeypatch.setattr(G, "decode_course", lambda s, k: calls.append(("decode", (s, k), ())) or f"c{k}")
     monkeypatch.setattr(build, "long_time", lambda s, c: calls.append(("long_time", (s, c), ())) or f"{s}+{c}")
+    monkeypatch.setattr(build, "race_times", lambda s, c: calls.append(("race_times", (s, c), ())) or f"{s}+t{c}")
     monkeypatch.setattr(TT, "extended_title", lambda s, *a, **k: calls.append(
         ("extended_title", (s, *a), tuple(sorted(k.items())))) or f"{s}+title")
+    monkeypatch.setattr(build, "pit_stalls", lambda s, d, n: calls.append(("pit_stalls", (s, d, n), ())) or f"{s}+p{n}")
 
 
 def test_release_chain(monkeypatch):
     """`release_set` runs grow_ids, guard_new_ids, widen_ids, converts 3, 4, 7, 6 and 5 at their own ids
     (`converted_set(..., n, slot=n, scenery="model")`), grow_rankings, the select with the release row
-    (select.ENTRIES itself), `build.long_time` on each of 3-7 (RELEASE_LONG_IDS), the title (`title.extended_title` on
-    the last long_time's set, its variant the default, title.PICKED) and `build.viewed_set` last: the M5b playtest
-    set's steps (tools/desert_city_playtest.py `m5b_set`) on the same inputs, the select's row and the title aside.
-    `long_ids=()` drops only the long_time calls, `title=False` (test-only) only the title; a long id outside 3-7 (an original's times are the arcade's) and
-    inputs that are not a RomSet and a DcDisc are ReleaseError (a DecodeError) before any step runs."""
+    (select.ENTRIES itself), `build.race_times` on each of 3-7 (RELEASE_TIME_IDS, v0.1.2), no long time by default,
+    `build.pit_stalls(..., disc, n)` on each of 3-7 (RELEASE_PIT_IDS, v0.1.2), the title (`title.extended_title` on the
+    last pit step's set) and `build.viewed_set` last. `long_ids` adds `build.long_time` on those ids after the race
+    times; `times=False` (test-only) drops the race times and `pits=False` (test-only) the pit stalls, so
+    `release_set(rs, dc, RELEASE_LONG_IDS, times=False, pits=False)` is v0.1.1's chain: the M5b playtest set's steps
+    (tools/desert_city_playtest.py `m5b_set`) on the same inputs, the select's row and the title aside. `title=False`
+    (test-only) drops only the title; a long id outside 3-7 (an original's times are the arcade's), `title`, `times` or
+    `pits` not a bool, and inputs that are not a RomSet and a DcDisc are ReleaseError (a DecodeError) before any step
+    runs."""
     rs, dc = _inputs()
     calls = _record(monkeypatch)
     _record_long_times(monkeypatch, calls)
     R.release_set(rs, dc)
     names = [c[0] for c in calls]
-    assert names == (["grow_ids", "guard_new_ids", "widen_ids"] + ["converted_set"] * 5 + ["grow_rankings",
-                     "patch_select"] + ["decode", "long_time"] * 5 + ["extended_title", "viewed_set"])
-    assert R.RELEASE_CONVERTED == (3, 4, 7, 6, 5) and R.RELEASE_LONG_IDS == (3, 4, 5, 6, 7)
+    head = ["grow_ids", "guard_new_ids", "widen_ids"] + ["converted_set"] * 5 + ["grow_rankings", "patch_select"]
+    pits = ["pit_stalls"] * 5
+    assert names == head + ["decode", "race_times"] * 5 + pits + ["extended_title", "viewed_set"]
+    assert R.RELEASE_CONVERTED == (3, 4, 7, 6, 5)
+    assert R.RELEASE_TIME_IDS == R.RELEASE_LONG_IDS == R.RELEASE_PIT_IDS == (3, 4, 5, 6, 7)
+    assert [c[1][1:] for c in calls if c[0] == "pit_stalls"] == [(dc, n) for n in (3, 4, 5, 6, 7)]
     conv = [c for c in calls if c[0] == "converted_set"]
     assert [c[1][1:] for c in conv] == [(dc, n) for n in (3, 4, 7, 6, 5)]
     assert [c[2] for c in conv] == [(("scenery", "model"), ("slot", n)) for n in (3, 4, 7, 6, 5)]
@@ -58,26 +67,37 @@ def test_release_chain(monkeypatch):
     sel = calls[names.index("patch_select")]
     assert sel[1][0] == "grow_rankings#9" and sel[1][1] is S.ENTRIES and sel[2] == ()
     assert [c[1][1] for c in calls if c[0] == "decode"] == [3, 4, 5, 6, 7]
-    assert calls[-2] == ("extended_title", ("patch_select#10+c3+c4+c5+c6+c7",), ())
-    assert calls[-1] == ("viewed_set", ("patch_select#10+c3+c4+c5+c6+c7+title",), ())
-    # the M5b playtest chain, step for step, but for the row and the title
-    full, calls[:] = list(calls), []
+    timed = "patch_select#10+tc3+tc4+tc5+tc6+tc7"
+    pitted = "+p3+p4+p5+p6+p7"
+    assert calls[-2] == ("extended_title", (timed + pitted,), ())
+    assert calls[-1] == ("viewed_set", (timed + pitted + "+title",), ())
+    # long_ids after the race times
+    calls[:] = []
+    R.release_set(rs, dc, (7, 3))
+    assert [c[0] for c in calls][len(head):-2] == ["decode", "race_times"] * 5 + ["decode", "long_time"] * 2 + pits
+    assert [c[1][1] for c in calls if c[0] == "decode"][5:] == [7, 3]
+    assert calls[-2] == ("extended_title", (timed + "+c7+c3" + pitted,), ())
+    # times=False, pits=False with RELEASE_LONG_IDS: v0.1.1's chain, the M5b playtest chain step for step but the row
+    # and title
+    calls[:] = []
+    R.release_set(rs, dc, R.RELEASE_LONG_IDS, times=False, pits=False)
+    full = list(calls)
+    assert [c[0] for c in full] == head + ["decode", "long_time"] * 5 + ["extended_title", "viewed_set"]
+    assert full[-2] == ("extended_title", ("patch_select#10+c3+c4+c5+c6+c7",), ())
+    calls[:] = []
     _tool().m5b_set(rs, dc)
     m5b = [c if c[0] != "patch_select" else (c[0], (c[1][0], S.ENTRIES), c[2]) for c in calls]
     assert calls[names.index("patch_select")][1][1] is S.M5B_ENTRIES and m5b[:-1] == full[:-2]
     assert m5b[-1] == ("viewed_set", ("patch_select#10+c3+c4+c5+c6+c7",), ())
-    # long_ids=(): the same steps without the start words
+    # times=False, long_ids=(): the gates' set, no time step at all (the pit stalls kept)
     calls[:] = []
-    R.release_set(rs, dc, ())
-    assert [c for c in full if c[0] not in ("decode", "long_time")][:-2] == calls[:-2]
-    assert calls[-2:] == [("extended_title", ("patch_select#10",), ()), ("viewed_set", ("patch_select#10+title",), ())]
+    R.release_set(rs, dc, (), times=False)
+    assert [c[0] for c in calls] == head + pits + ["extended_title", "viewed_set"]
+    assert calls[-2:] == [("extended_title", ("patch_select#10" + pitted,), ()),
+                          ("viewed_set", ("patch_select#10" + pitted + "+title",), ())]
     calls[:] = []
-    R.release_set(rs, dc, (), title=False)
-    assert [c for c in full if c[0] not in ("decode", "long_time", "extended_title")][:-1] == calls[:-1]
-    assert calls[-1] == ("viewed_set", ("patch_select#10",), ())
-    calls[:] = []
-    R.release_set(rs, dc, (7, 3))
-    assert [c[1][1] for c in calls if c[0] == "decode"] == [7, 3]
+    R.release_set(rs, dc, (), title=False, times=False, pits=False)
+    assert [c[0] for c in calls] == head + ["viewed_set"] and calls[-1] == ("viewed_set", ("patch_select#10",), ())
     # refusals, before any step
     for bad in ((rs, dc, (2,)), (rs, dc, (8,)), (rs, dc, (True,)), (rs, dc, (3.0,)), (rs, dc, 3), (rs, dc, "3"),
                 (rs, dc, None), ("stock", dc), (None, dc), (rs, "disc"), (rs, None)):
@@ -85,14 +105,14 @@ def test_release_chain(monkeypatch):
         with pytest.raises(R.ReleaseError):
             R.release_set(*bad)
         assert calls == [], bad
-    for bad in (1, None, "no"):
-        with pytest.raises(R.ReleaseError):
-            R.release_set(rs, dc, (), title=bad)
-        assert calls == [], bad
+    for kw in ("title", "times", "pits"):
+        for bad in (1, None, "no"):
+            with pytest.raises(R.ReleaseError):
+                R.release_set(rs, dc, (), **{kw: bad})
+            assert calls == [], (kw, bad)
     with pytest.raises(TypeError):
-        R.release_set(rs, dc, (), False)         # title is keyword-only
+        R.release_set(rs, dc, (), False)         # title and times are keyword-only
     assert issubclass(R.ReleaseError, DecodeError)
-
 
 def _select_bytes(rs: RomSet, entries) -> set[tuple[str, int]]:
     """(region, offset) of every byte patch_select writes for `entries` on `rs` (patched): its data from DATA_AT to
@@ -129,10 +149,10 @@ def _release(romset_zip, disc) -> RomSet:  # noqa: F811
 
 
 RELEASE_SHA1 = {"program": "1f6a3b04d75b03489a2f5c1278cbd299af917ef7",
-                "data": "606027764e1c67f57cfce838d0c90d3e49a7ef34",
+                "data": "d15ab850188262f41dfe4387de99654c2416fea4",
                 "copro_data": "06e8923fa71bf8f5935b89c746058e3910f2396f",
-                "polygons": "69be60453f1168378dd862c625609a920e942baa",
-                "textures": "c31364a959230807ff3ab13b2d519748e529a83b"}
+                "polygons": "3a1fbd3a1652b2ffbc87b1392d1f408f27ab5525",
+                "textures": "7f563df006f2691e91845764f281e7deda45b176"}
 """The release set (`release_set`: the M5b chain, the named row, the start words of 3-7, the title, the views; Task 7's
 painted maps on the select), the sha1 of each region, built independently of the code under test: ed570c2 (Task 5's
 first commit) from a git archive into a scratch folder, a fresh venv on the repository's Python 3.15.0 with `pip install
@@ -145,12 +165,19 @@ numpy 2.5.4; out/phase13/r2/pins.txt, its `dtools build` 370 s cold); the Docker
 same 41 members (docs/spike/2026-11-page.md, "The clean install"). v0.1.1 repinned it (data, polygons, textures;
 program and copro_data unchanged): build.shadow_volumes also takes an untextured closed mesh of a kind-3 object (CS4's
 23 and CS6's 5 volumes not black; out/debug/np-start/report.md); out/debug/np-start/fixset.py, v0.1's code with only
-that rule patched in, built these bytes before the change was written."""
+that rule patched in, built these bytes before the change was written. v0.1.2 repinned it again (data, polygons,
+textures): build.decals also drops a texture nearly one colour (Mermaid Lake's and Circuit Pixie's shadow 67, drawn
+solid black under gantries and bridges); out/debug/lake/fixset.py, v0.1.1's code with only that rule patched in,
+built these bytes before the change was written. v0.1.2's lake fix repinned it: build.CELL_CUT cuts Mermaid Lake's long scenery polygons on the cell grid (its start straight was not drawn during the start's fly-by) and build.QUAD[7] merges its quads as on 4-6, so the lap stays in budget; only CS7's scenery changes (data, polygons, textures; program and copro_data unchanged).
+v0.1.2's pit stops repinned it (data only): build.pit_stalls gives ids 3-7 the Dreamcast's pit stalls (4,640 bytes at
+the end of ID_DATA_FREE and the five CAR_TABLES_230E50 entries; out/pit/set-fix of the pit worktree, 4,655 bytes
+differ from the set before, all there)."""
 
 
 def test_release_set_pinned(romset_zip, disc):  # noqa: F811
     """The release set is RELEASE_SHA1 region for region: the bytes Phase 12 ships (the eight courses, the names, the
-    laps and painted maps, the long clock on 3-7, the title, the views) cannot move without this pin moving."""
+    laps and painted maps, the race times and pit stalls of 3-7 (v0.1.2), the title, the views) cannot move without
+    this pin moving."""
     import hashlib
     rel = _release(romset_zip, disc)
     assert {r: hashlib.sha1(getattr(rel, r)).hexdigest() for r in RELEASE_SHA1} == RELEASE_SHA1
@@ -166,7 +193,7 @@ def _m5b(romset_zip, disc) -> RomSet:  # noqa: F811
 
 
 def test_release_differs_only_in_names_and_title(romset_zip, disc):  # noqa: F811
-    """The release set (`release_set`: the names on the select, the start words of 3-7 raised, the title) against the
+    """The release set (`release_set`: the names on the select, the race times of 3-7, the title) against the
     M5b playtest set (tools/desert_city_playtest.py `m5b_set`, the same chain with Phase 11's row and no title): every
     byte that differs lies in what patch_select writes on one or the other (its data, `layout_of`; its code at CODE_AT;
     its sites) or in the title's spans (`title.title_spans`: TITLE_RUN's start, the two repointed words), and every
@@ -193,7 +220,10 @@ def test_release_differs_only_in_names_and_title(romset_zip, disc):  # noqa: F81
     chars, pals = _hole_uploads(rel)
     upload = TT._u32(rel, TT.BOOT_WORD)
     assert [a for a, _ in chars] == [upload] and [a for a, _ in pals] == [upload]
-    allowed = select | title
+    times = {("data", o) for o in _time_spans(rel, R.RELEASE_TIME_IDS)}     # v0.1.2: race times, M5b: long clock
+    pits = {("data", o) for o in _pit_spans(rel, R.RELEASE_PIT_IDS)}        # v0.1.2: the pit stalls of 3-7
+    assert not pits & (select | title | times)
+    allowed = select | title | times | pits
     changed = {}
     for region in REGIONS:
         a, b = getattr(rel, region), getattr(ref, region)
@@ -211,38 +241,138 @@ def test_release_differs_only_in_names_and_title(romset_zip, disc):  # noqa: F81
 
 
 def _release_short(romset_zip, disc) -> RomSet:  # noqa: F811
-    """release_set(..., long_ids=()) of the player's set and disc (the set the gates race: test_release_mame.py
-    `test_release_gates`), built once per session."""
+    """release_set(..., long_ids=(), times=False) of the player's set and disc (the set the gates race:
+    test_release_mame.py `test_release_gates`; the converted courses keep Beginner's words), built once per session."""
     key = ("short", str(romset_zip))
     if key not in _RELEASE:
-        _RELEASE[key] = R.release_set(RomSet.from_zip(romset_zip), disc, long_ids=())
+        _RELEASE[key] = R.release_set(RomSet.from_zip(romset_zip), disc, long_ids=(), times=False)
     return _RELEASE[key]
 
 
-def test_release_long_ids_only_start_words(romset_zip, disc):  # noqa: F811
-    """`release_set(...)` against `release_set(..., long_ids=())` (the set the gates race): the bytes that differ are
-    exactly those of the first word of each time table of ids 3-7 (RELEASE_LONG_IDS) that build.LONG_TIME changes, each
-    such word reads LONG_TIME on the release set and not on the other, and no time table of the originals (ids 0-2)
-    shares one (Phase 11's test_m5b_set_bytes pattern). The title's spans are the same on both."""
-    rel, short = _release(romset_zip, disc), _release_short(romset_zip, disc)
+def _time_spans(s: RomSet, ids) -> set[int]:
+    """Data offsets of every byte of the time tables of `ids` on `s`."""
+    return {t - DATA_BASE + i for k in ids for _, t, w in G.decode_course(s, k).time_tables.values()
+            for i in range(4 * len(w))}
 
-    def words(s: RomSet, k: int) -> set[int]:
-        return {t - DATA_BASE for _, t, _ in G.decode_course(s, k).time_tables.values()}
-    raised = set().union(*(words(short, k) for k in R.RELEASE_LONG_IDS))
-    new = struct.pack("<I", build.LONG_TIME)
-    expected = {w + i for w in raised for i in range(4) if short.data[w + i] != new[i]}
-    assert expected
+
+def test_release_race_times(romset_zip, disc):  # noqa: F811
+    """v0.1.2: the release set against `release_set(..., long_ids=(), times=False)` (the set the gates race): the
+    bytes that differ all lie in the time tables of ids 3-7 (RELEASE_TIME_IDS), no other region differs; on the
+    release set each of those courses' tables reads build.RACE_TIMES word for word at the same addresses and with the
+    same lengths (1 + laps x (checkpoints + 1) words per mode), golden.check_course passes on it, and the originals'
+    (ids 0-2) tables equal the stock set's and share no byte with them. The title's spans are the same on both."""
+    rel, short = _release(romset_zip, disc), _release_short(romset_zip, disc)
+    stock = RomSet.from_zip(romset_zip)
+    spans = _time_spans(short, R.RELEASE_TIME_IDS)
     for region in REGIONS:
         a, b = getattr(short, region), getattr(rel, region)
         assert len(a) == len(b), region
         if region != "data":
             assert a == b, region
     diff = set(np.flatnonzero(np.frombuffer(short.data, np.uint8) != np.frombuffer(rel.data, np.uint8)).tolist())
-    assert diff == expected
-    assert all(rel.data[w:w + 4] == new != short.data[w:w + 4] for w in raised)
-    assert all(not raised & words(short, k) for k in range(C.COURSE_COUNT))
+    assert diff and diff <= spans
+    assert sorted(build.RACE_TIMES) == list(R.RELEASE_TIME_IDS)
+    for k in R.RELEASE_TIME_IDS:
+        c, before = G.decode_course(rel, k), G.decode_course(short, k)
+        assert {key: v[:2] for key, v in c.time_tables.items()} == {key: v[:2] for key, v in before.time_tables.items()}
+        assert {key: v[2] for key, v in c.time_tables.items()} == {
+            key: build.race_table(*build.RACE_TIMES[k][key], len(v[2])) for key, v in before.time_tables.items()}, k
+        rows = [cp for cp in c.checkpoints if not cp.lap_line]
+        for (m, d), (_, _, words) in c.time_tables.items():
+            assert len(words) == len(before.time_tables[(m, d)][2]) == 1 + c.laps[m][1] * (len(rows) + 1), (k, m, d)
+        G.check_course(c, rel)
+    for k in range(3):
+        assert ({key: v[1:] for key, v in G.decode_course(rel, k).time_tables.items()} ==
+                {key: v[1:] for key, v in G.decode_course(stock, k).time_tables.items()}), k
+    assert not _time_spans(rel, range(3)) & spans
     assert TT.title_spans(rel) == TT.title_spans(short) != []
 
+
+def _pit_spans(s: RomSet, ids) -> set[int]:
+    """Data offsets of every byte build.pit_stalls writes for `ids` on `s`: each id's CAR_TABLES_230E50 entry and
+    the stalls it names (course.PIT_STALLS_SIZE bytes from course.pit_stalls_at)."""
+    out = set()
+    for k in ids:
+        entry = C.id_table(s, "CAR_TABLES_230E50") + 4 * k - DATA_BASE
+        at = C.pit_stalls_at(s, k) - DATA_BASE
+        out |= set(range(entry, entry + 4)) | set(range(at, at + C.PIT_STALLS_SIZE))
+    return out
+
+
+def test_release_pit_stalls(romset_zip, disc):  # noqa: F811
+    """v0.1.2: ids 3-7 (RELEASE_PIT_IDS) read the Dreamcast's pit stalls of their course (dc.exe.pit_stalls, the
+    plain group: 8 stalls of 7 waypoints x, z, speed; x moved by build.SHIFT as the course, Rin Rin Rink's by -64),
+    each in its own block at the end of ID_DATA_FREE (build.last_fit), padded with 0; the originals (ids 0-2) keep the stock set's. Each course's stalls lie on its pit
+    lane and run with it: each stall's first five waypoints (to the one before the stop; the last two are the stop and
+    the lane's end, never reached) are within PIT_LANE_REACH of a pit polygon's centre, and the segments of those
+    polygons, counted from the pit entry, never step back (the R group's step back: the check's control). Before v0.1.2 every id 3-15 read Beginner's stalls: the stop
+    (0xe384) skipped all seven waypoints in 7 frames (spike/pit_drive.py, docs/follow-ups/v0.1.2.md)."""
+    from dtools.arcade import tgp
+    from dtools.dc import exe as X
+    rel, stock = _release(romset_zip, disc), RomSet.from_zip(romset_zip)
+    blob = disc.read(X.EXE_NAME)
+    assert all(C.pit_stalls(rel, k) == C.pit_stalls(stock, k) for k in range(3))
+    blocks = []
+    for k in R.RELEASE_PIT_IDS:
+        got = C.pit_stalls(rel, k)
+        dx = build.SHIFT.get(k, 0.0)                    # Rin Rin Rink's x moved by -64, as the course
+        assert got == tuple(tuple(C.PitWaypoint(float(np.float32(w.x + dx)), w.z, w.speed) for w in st)
+                            for st in X.pit_stalls(blob, k)), k
+        assert got != C.pit_stalls(stock, 0)
+        at = C.pit_stalls_at(rel, k)
+        assert build.ID_DATA_FREE[0] <= at - DATA_BASE <= sum(build.ID_DATA_FREE) - C.PIT_STALLS_SIZE
+        blocks.append(at)
+        c = G.decode_course(rel, k)
+        g = c.ground_data or tgp.decode_ground(rel, k)
+        n = len(c.road)
+        idx = c.pit.lane_polygons + (c.pit.box_polygon,)
+        cen = np.array([[(g.polys[i].centre or np.mean(g.polys[i].corners, axis=0))[a] for a in (0, 2)] for i in idx])
+        seg = np.array([c.steps[i].segment for i in idx])
+        for v, forward in (("", True), ("R", False)):
+            for st in (got if v == "" else X.pit_stalls(blob, k, "R")):
+                w = np.array([(p[0] + (dx if v else 0.0), p[1]) for p in st[:5]])
+                d = np.linalg.norm(w[:, None, :] - cen[None, :, :], axis=2)
+                assert not forward or d.min(axis=1).max() <= PIT_LANE_REACH, (k, v, d.min(axis=1))
+                run = [int((s - c.pit.entry_segment) % n) for s in seg[d.argmin(axis=1)]]
+                assert (run == sorted(run)) == forward, (k, v, run)
+    assert all(abs(a - b) >= C.PIT_STALLS_SIZE for a in blocks for b in blocks if a != b) and len(set(blocks)) == 5
+
+
+PIT_LANE_REACH = 25.0
+"""World units: how far a pit stall's waypoint may lie from the nearest pit polygon's centre (the lane polygons are
+up to about 40 units long); measured once the test passed: see docs/follow-ups/v0.1.2.md, "Pit stops"."""
+
+
+RACE_TIMES_MEASURED = Path(__file__).resolve().parent / "data" / "race_times_measured.json"
+"""The AI field's sector times on courses 0-7 (frame counts only; spike/race_times.py, docs/spike/2026-11-race-times.md)."""
+
+
+def race_times_inputs(stock: RomSet, short: RomSet):
+    """racetimes.derive's inputs besides the measurements: the originals' time tables (ids 0-2, from the stock set),
+    the laps per mode and the checkpoint count (lap line not counted) of ids 0-7 (from the release set)."""
+    originals = {k: {key: v[2] for key, v in G.decode_course(stock, k).time_tables.items()} for k in range(3)}
+    laps, cps = {}, {}
+    for k in range(8):
+        c = G.decode_course(short, k)
+        laps[k] = {m: v[1] for m, v in c.laps.items()}
+        cps[k] = sum(not cp.lap_line for cp in c.checkpoints)
+    return originals, laps, cps
+
+
+def test_race_times_frozen(romset_zip, disc):  # noqa: F811
+    """build.RACE_TIMES equals racetimes.derive on the recorded measurements (RACE_TIMES_MEASURED), the stock set's
+    original tables and the release set's laps and checkpoints: the frozen numbers cannot drift from their
+    derivation."""
+    import json
+    from dtools.convert import racetimes
+    measured = json.loads(RACE_TIMES_MEASURED.read_text())
+    originals, laps, cps = race_times_inputs(RomSet.from_zip(romset_zip), _release_short(romset_zip, disc))
+    derived = racetimes.derive(measured, originals, laps, cps)
+    assert sorted(derived) == sorted(build.RACE_TIMES)
+    for k, tabs in derived.items():
+        assert sorted(tabs) == sorted(build.RACE_TIMES[k]), k
+        for key, words in tabs.items():
+            assert build.race_table(*build.RACE_TIMES[k][key], len(words)) == words, (k, key)
 
 RELEASE_SET_UPLOAD = (31, 24, 29, 126)
 """The release set's number (210 chars), not the bare grown set's 188 (RELEASE_UPLOAD in tests/test_select.py): on the

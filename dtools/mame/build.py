@@ -20,7 +20,8 @@ from dtools.mame import runner
 from dtools.mame.runner import MameError
 
 LOG_ENVS = {"ground": "DAYTONA_GROUND_LOG", "rate": "DAYTONA_RATE_LOG", "geo": "DAYTONA_GEO_LOG",
-            "progress": "DAYTONA_PROGRESS_LOG", "cells": "DAYTONA_CELLS_LOG"}
+            "progress": "DAYTONA_PROGRESS_LOG", "cells": "DAYTONA_CELLS_LOG",
+            "pit": "DAYTONA_PIT_LOG"}
 
 
 def run_set(rs: RomSet | None, workdir: Path, seconds: int, romset_zip: Path, env: dict[str, str],

@@ -99,7 +99,7 @@ def parse_rate(path: Path) -> list[tuple[int, int, int, int]]:
     """(frame, writes to the read start address that frame, videoctl & 3, FNV-1a of the 256 words at the read
     start) per `R` line of renderrate.lua."""
     out = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             p = line.split()
             if len(p) == 5 and p[0] == "R":
@@ -128,7 +128,7 @@ def parse_ground(path: Path) -> tuple[list[GroundSample], dict[int, tuple[float,
     log of a run that never reached the race parses to ([], {})."""
     samples: list[GroundSample] = []
     positions: dict[int, tuple[float, float, float]] = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             p = line.split()
             if len(p) == 10 and p[0] == "G":
@@ -194,7 +194,7 @@ def parse_progress(path: Path) -> tuple[list[Progress], dict[int, int]]:
     for an S or T line whose fields are not decimal integers."""
     rows: list[Progress] = []
     timer: dict[int, int] = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
             p = line.split()
             try:
@@ -211,7 +211,7 @@ def parse_ground_slots(path: Path) -> list[tuple[int, int]]:
     """(frame, slot) of every `S <frame> <slot>` line of a ground_log.lua log: the course loads' TGP function 0x0d
     calls, in order."""
     out = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             p = line.split()
             if len(p) == 3 and p[0] == "S":
@@ -223,7 +223,7 @@ def parse_camera(path: Path) -> dict[int, tuple[tuple[float, float, float], int,
     """{frame: ((x, y, z), pitch, yaw, roll)} from the `K <frame> <x> <y> <z> <pitch> <yaw> <roll>` lines of a
     progress_log.lua log: the scripted camera's world position (0x501720) and its s16 angles (0x501738-0x50173d)."""
     out = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             p = line.split()
             if len(p) == 8 and p[0] == "K":
@@ -234,7 +234,7 @@ def parse_camera(path: Path) -> dict[int, tuple[tuple[float, float, float], int,
 def parse_car_positions(path: Path) -> dict[int, dict[int, tuple[float, float, float]]]:
     """{frame: {car: (x, y, z)}} from the `C <frame> <car> <x> <y> <z>` lines of a progress_log.lua log."""
     out: dict[int, dict[int, tuple[float, float, float]]] = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             p = line.split()
             if len(p) == 6 and p[0] == "C":
@@ -248,7 +248,7 @@ def parse_cells(path: Path) -> dict[int, tuple[int, tuple[int, ...]]]:
     another field count) are ignored. MameError naming the line for a V line whose frame or count is not a decimal
     integer or whose cells are not hex bytes (0-ff)."""
     out: dict[int, tuple[int, tuple[int, ...]]] = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
             p = line.split()
             if len(p) == 4 and p[0] == "V":

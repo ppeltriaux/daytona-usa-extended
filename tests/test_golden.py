@@ -93,6 +93,12 @@ def _hud(**kw):
     return C.HudMap(**h)
 
 # (encoder, call with every field fitting, call with one field one past its width, the error class)
+def _stalls(speed: float = 150.0):
+    """Eight pit stalls of seven waypoints (course.encode_pit_stalls), every speed `speed`."""
+    return tuple(tuple(C.PitWaypoint(float(k), float(-j), speed) for j in range(C.PIT_WAYPOINTS))
+                 for k in range(C.PIT_STALLS))
+
+
 GUARDS = [
     ("encode_course_entry", lambda: C.encode_course_entry(_entry()),
      lambda: C.encode_course_entry(_entry(step_table=C.DATA_WINDOW)), CourseError),
@@ -139,6 +145,10 @@ GUARDS = [
      lambda: C.encode_step_table(1, [C.Step(2, 1)]), CourseError),
     ("encode_pit", lambda: C.encode_pit(1, _STEPS, _PIT),
      lambda: C.encode_pit(1, _STEPS, _PIT._replace(box_polygon=len(_STEPS))), CourseError),
+    ("encode_pit_stalls", lambda: C.encode_pit_stalls(_stalls(), (0xFFFFFFFF - C.PIT_STALLS_SIZE) & ~3),
+     lambda: C.encode_pit_stalls(_stalls(), ((0xFFFFFFFF - C.PIT_STALLS_SIZE) & ~3) + 4), CourseError),
+    ("encode_pit_stalls speed", lambda: C.encode_pit_stalls(_stalls(3.4028234663852886e38), 0),
+     lambda: C.encode_pit_stalls(_stalls(3.5e38), 0), CourseError),
     ("encode_rolling_start", lambda: C.encode_rolling_start(True), lambda: C.encode_rolling_start(1), CourseError),
     ("encode_wheel_zones", lambda: C.encode_wheel_zones(C.WheelZones(31, 0x7C000000)),
      lambda: C.encode_wheel_zones(C.WheelZones(32, 108)), CourseError),
@@ -748,7 +758,7 @@ def test_excluded_names_the_reads_no_table_explains():
     for addr in ("0x65d4", "0x6a34", "0xf548", "0x1149c", "0x221b80", "0x221c34", "0x23895c"):
         assert addr in G.EXCLUDED[reads], addr
     from pathlib import Path
-    doc = (Path(__file__).parents[1] / "docs/formats/model2-course-tables.md").read_text()
+    doc = (Path(__file__).parents[1] / "docs/formats/model2-course-tables.md").read_text(encoding="utf-8")
     section = doc.split("### Not covered by M1's golden test")[1].split("\n### ")[0]
     assert "| HUD map" not in section and "| course-dependent reads not tied to a table |" in section
     row = next(ln for ln in section.splitlines() if ln.startswith("| course-dependent reads"))

@@ -8,10 +8,12 @@ and skips without them."""
 import hashlib
 import os
 import random
+import re
 import shutil
 import stat
 import struct
 import subprocess
+import sys
 import zipfile
 import zlib
 from pathlib import Path
@@ -201,7 +203,7 @@ def test_out_dir(tmp_path, monkeypatch):
     afile = tmp_path / "afile"
     afile.write_text("x")
     assert any("afile" in ln for ln in _problems(R.check_inputs(roms, cue, afile)))
-    if os.geteuid() != 0:
+    if hasattr(os, "geteuid") and os.geteuid() != 0:       # POSIX only: a read-only folder, and root ignores it
         ro = tmp_path / "ro"
         ro.mkdir()
         ro.chmod(0o500)
@@ -266,6 +268,50 @@ def _fake_cli(monkeypatch, rs: RomSet, seen: dict, built=None):
     monkeypatch.setattr(R, "release_set", release_set)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
+def test_posix_command_through_sh():
+    for odd in ("/tmp/with space", '/tmp/a"b', "/tmp/$HOME", "/tmp/`id`", "/tmp/back\\slash", "/tmp/it's",
+                "/tmp/bang!", "/tmp/new\nline"):
+        cmd = R.mame_command(Path(odd), "Linux")  # what /bin/sh makes of it: the six words, the paths verbatim
+        got = subprocess.run(["/bin/sh", "-c", "printf '%s\\0' " + cmd], capture_output=True, text=True, check=True)
+        assert got.stdout.split("\0")[:-1] == ["build/mame/model2", "daytona", "-rompath", odd, "-nvram_directory",
+                                                f"{odd}/nvram"], (odd, cmd)
+
+
+def test_windows_command():
+    assert R.mame_command(Path(r"C:\games\daytona out"), "Windows") == (
+        r'.\mame.exe daytona -rompath "C:\games\daytona out" -nvram_directory "C:\games\daytona out\nvram"')
+
+
+def test_windows_command_odd_paths():
+    assert R.mame_command(Path(r"C:\Users\Zoë Smith\out"), "Windows") == (
+        r'.\mame.exe daytona -rompath "C:\Users\Zoë Smith\out" -nvram_directory "C:\Users\Zoë Smith\out\nvram"')
+    for ch in '"%$`':
+        with pytest.raises(R.ReleaseError, match=re.escape(ch)):
+            R.mame_command(Path(rf"C:\a{ch}b"), "Windows")
+
+
+def test_windows_out_drive_root_or_trailing_backslash():
+    for bad in ("C:\\", "D:/"):                  # a drive root (on Windows, Path keeps its backslash)
+        with pytest.raises(R.ReleaseError, match="backslash"):
+            R.mame_command(Path(bad), "Windows")
+    assert "backslash" in R._windows_out_problem("C:\\games\\")      # as typed, before Path normalises it
+    assert R._windows_out_problem("C:\\games\\out") == ""
+    for ok in (".", "..", "out", r"..\out", r"C:\games\out"):
+        assert R._windows_out_problem(ok) == "", ok
+    for bad in ("C:\\", "C:", r"\\srv\share", "\\\\srv\\share\\"):
+        assert R._windows_out_problem(bad), bad
+
+
+def test_windows_notes():
+    note = R.custom_note("Windows")
+    assert R.WINDOWS_MAME_ZIP == "daytona-usa-extended-mame-0.289-win64.zip"
+    assert R.WINDOWS_MAME_ZIP in note and "tools/build-mame.sh" not in note
+    assert R.WINDOWS_MAME_ZIP in R.run_from("Windows")
+    assert R.custom_note("Darwin") == R.CUSTOM_NOTE
+    assert R.run_from("Linux") == "run it from the repository root, with the custom MAME:"
+
+
 def test_build_report_and_command(tmp_path, monkeypatch, capsys):
     """Review Focus 4. The printed command and build-report.txt name `build/mame/model2`, `-rompath "<out>"` and
     `-nvram_directory "<out>/nvram"` (out absolute), say "stock MAME 0.289 will not run" the set and name
@@ -278,9 +324,8 @@ def test_build_report_and_command(tmp_path, monkeypatch, capsys):
     R.write_release(rs, out, roms, checks=["roms ok", "disc ok"])
     text = (out / "build-report.txt").read_text()
     o = out.resolve()
-    for want in ("build/mame/model2 daytona", f'-rompath "{o}"', f'-nvram_directory "{o}/nvram"',
-                 "stock MAME 0.289 will not run", "tools/build-mame.sh", "commit: ", "Python 3.15.0", "MAME 0.289",
-                 "roms ok", "disc ok"):
+    for want in (R.mame_command(o), R.custom_note(), R.run_from(), "stock MAME 0.289 will not run", "commit: ",
+                 "Python 3.15.0", "MAME 0.289", "roms ok", "disc ok"):
         assert want in text, want
     sha = R.member_sha1(rs)
     lines = text.splitlines()
@@ -288,13 +333,9 @@ def test_build_report_and_command(tmp_path, monkeypatch, capsys):
     assert [m[0] for m in member] == sorted(sha) and all(sha[n] == h for n, h in member)
     for r in REGIONS:
         assert f"{r} {hashlib.sha1(getattr(rs, r)).hexdigest()}" in text
-    assert R.mame_command(o) == f'build/mame/model2 daytona -rompath "{o}" -nvram_directory "{o}/nvram"'
-    for odd in ("/tmp/with space", '/tmp/a"b', "/tmp/$HOME", "/tmp/`id`", "/tmp/back\\slash", "/tmp/it's",
-                "/tmp/bang!", "/tmp/new\nline"):
-        cmd = R.mame_command(Path(odd))           # what /bin/sh makes of it: the six words, the paths verbatim
-        got = subprocess.run(["/bin/sh", "-c", "printf '%s\\0' " + cmd], capture_output=True, text=True, check=True)
-        assert got.stdout.split("\0")[:-1] == ["build/mame/model2", "daytona", "-rompath", odd, "-nvram_directory",
-                                                f"{odd}/nvram"], (odd, cmd)
+    if sys.platform != "win32":                  # the exact POSIX texts (the Windows ones: test_windows_*)
+        assert R.mame_command(o) == f'build/mame/model2 daytona -rompath "{o}" -nvram_directory "{o}/nvram"'
+        assert "tools/build-mame.sh" in text and 'build/mame/model2 daytona' in text
 
     seen: dict = {}
     _fake_cli(monkeypatch, rs, seen)
@@ -303,7 +344,9 @@ def test_build_report_and_command(tmp_path, monkeypatch, capsys):
     assert cli.main(["build", "--roms", str(roms), "--disc", str(cue), "--out", str(out)]) == 0
     printed = capsys.readouterr().out
     assert R.mame_command(o) in printed and "stock MAME 0.289 will not run" in printed
-    assert "tools/build-mame.sh" in printed
+    assert R.run_from() in printed and R.custom_note() in printed
+    if sys.platform != "win32":
+        assert "tools/build-mame.sh" in printed
     assert seen["env"] == str(o / "work") and seen["disc_out"] == o / "work"
     assert os.environ.get("DAYTONA_OUT") == env
 
@@ -521,7 +564,8 @@ def test_written_files(tmp_path, monkeypatch):
             R.write_release(rs, out, roms)
         finally:
             os.umask(old)
-        assert {n: stat.S_IMODE((out / n).stat().st_mode) for n in names} == dict.fromkeys(names, mode), umask
+        if sys.platform != "win32":                                      # POSIX file modes and umask
+            assert {n: stat.S_IMODE((out / n).stat().st_mode) for n in names} == dict.fromkeys(names, mode), umask
     shutil.rmtree(out)
 
     _earlier_build(out)

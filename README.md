@@ -9,9 +9,8 @@ https://continuearcade.com/daytona-usa-extended/
 This repository is a converter: one command builds the game on your machine from your own copies of the arcade game and
 of the Dreamcast disc. It holds none of either (see "Legal").
 
-> **v0.1.1 is a very early release, still under development.** All eight courses load and race on the arcade's engine,
-> but time limits, laps and opponents are not tuned yet and the new courses have rendering defects: see "Known
-> issues".
+> **v0.1.2 is a very early release, still under development.** All eight courses load and race on the arcade's engine,
+> but laps and opponents are not tuned yet and the new courses have rendering defects: see "Known issues".
 
 ## What you need
 
@@ -20,9 +19,16 @@ of the Dreamcast disc. It holds none of either (see "Legal").
 - **Your own copy of the Dreamcast game:** the US *Daytona USA* disc (`Daytona USA (USA)`, MK-51037) as the Redump `.7z`,
   or its `.cue` with the track `.bin` files beside it. Other releases and regions are refused.
 - **Python 3.12 or newer** (numpy is installed by `pip`).
+- **On Windows:** Python 3.12 or newer from python.org (tick "Add python.exe to PATH"), and the prebuilt MAME from this
+  repository's Releases page (https://github.com/ppeltriaux/daytona-usa-extended/releases; the latest release, v0.1.2
+  or later): `daytona-usa-extended-mame-0.289-win64.zip` (`mame.exe`, linked statically so it needs no DLLs, MAME's
+  licences, the patch and a README.txt). Unzip it anywhere. The `.7z` works as on the other systems: no `bsdtar` is
+  needed. Windows' own `tar.exe` is tried first (current Windows reads the `.7z`), then py7zr (installed with
+  `dtools` on Python 3.12 to 3.14). On Python 3.15 there is no py7zr yet, so the `.7z` is read by `tar.exe`; if your
+  Windows cannot, extract it with 7-Zip and pass the `.cue` instead.
 - **On Linux, libarchive's `bsdtar`** to read the `.7z` (Debian/Ubuntu: `sudo apt install libarchive-tools`; macOS
   has it), or pass the disc's `.cue` instead.
-- **The custom MAME build.** The new courses outgrow the arcade's ROM regions, so **stock MAME 0.289 will not run the
+- **The custom MAME build** (Windows: the zip above, nothing to build). The new courses outgrow the arcade's ROM regions, so **stock MAME 0.289 will not run the
   set.** `tools/build-mame.sh` clones MAME 0.289, applies `tools/mame-daytona-rom-space.patch` and builds
   `build/mame/model2`; it takes 25 to 60 minutes from scratch (about 25 on a 12-core Mac), once. It needs macOS with
   Homebrew's `sdl3` and `pkgconf`, git and the Xcode command-line tools. On Linux, apply
@@ -53,10 +59,23 @@ build/mame/model2 daytona -rompath ~/daytona-extended -nvram_directory ~/daytona
   `build-report.txt`: the commit, the Python and MAME versions tested, the input checks, the sha1 of every file in the
   zip, and the MAME command to run. The first build took 407 s on an Apple silicon Mac (the disc's extraction and the
   re-meshes of three courses); a rebuild into the same `--out` took 105 s.
-- Run MAME from the repository root, and **keep `-nvram_directory`**: MAME's default `nvram/daytona` belongs to the
+- On macOS and Linux, run MAME from the repository root. On Windows, run it from the unzipped MAME folder (`mame.exe`
+  is there; the command names `.\mame.exe`, which PowerShell and cmd both run from the current folder): `cd` there first. Keep the output and MAME folders free
+  of `"`, `%`, `$` and backticks (`dtools` refuses them in the output folder). And **keep `-nvram_directory`**: MAME's default `nvram/daytona` belongs to the
   stock game, and this set's first boot resets the backup RAM (its rankings have a new layout), which would wipe the
   stock game's best times. MAME shows a ROM warning once per launch (the five `dx-*.bin` files have no known good
   dump): press a key and the game runs.
+- **On Windows** (PowerShell, from the repository folder; the exe is unsigned, so SmartScreen may warn on the first
+  launch: click "More info", then "Run anyway"):
+
+  ```powershell
+  py -m venv .venv
+  .venv\Scripts\pip install -e .
+  .venv\Scripts\dtools build --roms C:\roms\daytona --disc "C:\dc\Daytona USA (USA)-Dreamcast.7z" --out C:\daytona-extended
+  ```
+
+  then run the command `dtools build` prints (it begins `.\mame.exe daytona -rompath "..." -nvram_directory
+  "...\nvram"`) from the folder you unzipped the MAME zip into. `dtools check` takes the same flags.
 - Exit codes: 0 done, 1 an input is wrong, 2 a usage error.
 
 **In the game:** the attract logo reads DAYTONA USA with "Extended" under DAYTONA. Circuit Select scrolls through eight
@@ -66,6 +85,16 @@ ones also show their laps for the game mode and a painted map of the course.
 
 ## Changes
 
+- **v0.1.2:** Mermaid Lake and Circuit Pixie no longer draw the Dreamcast's road shadows as black bands under the start
+  gantry, the bridge and the checkpoint arch; the race is unchanged. Mermaid Lake's road no longer vanishes around the
+  car while the camera comes down onto it before the start. Pit stops work on courses 3 to 7: the car is guided to its
+  stall for the pit work, as on the arcade's own courses. Windows: a prebuilt, patched MAME 0.289 for 64-bit Windows
+  (`daytona-usa-extended-mame-0.289-win64.zip`, built by this repository's GitHub Actions workflow, with the matching
+  source `daytona-usa-extended-mame-0.289-src.tar.gz`), and `dtools build` reads the `.7z` on Windows. Windows builds the same
+  set as macOS and Linux. Courses 3 to 7 race against a real clock: a start time and checkpoint extensions of their
+  own in every game mode and difficulty, as generous as the arcade's three courses measured against the
+  computer-driven field (the long clock is gone). v0.1.2 changes the set (the shadow decal, Mermaid Lake's scenery,
+  the pit stalls and the times), so rebuild.
 - **v0.1.1:** National Park Speedway and Rin Rin Rink no longer draw some of the Dreamcast's shadow volumes as walls
   (a grey slab behind National Park Speedway's start gantry, grey walls beside its pits and a dark band late in the
   lap; a black wall on Rin Rin Rink). The race is unchanged; both courses draw fewer polygons.
@@ -73,18 +102,21 @@ ones also show their laps for the game mode and a painted map of the course.
 
 ## Known issues
 
-- **Time limits are not tuned:** courses 3 to 7 (the five new ones) start with a long clock (12,000 ticks) so each can
-  be finished; their laps and opponents are not tuned either. The arcade's three keep their own.
+- **Time limits are measured, not played in:** courses 3 to 7 take their times from the computer-driven field's pace,
+  with the arcade's own courses' slack; the normal race at the default difficulty was driven in MAME, the long races
+  and other difficulties are derived. Their laps and opponents are not tuned. The arcade's three keep their own.
 - **Two courses draw a shorter view:** Circuit Pixie and Rin Rin Rink draw less far ahead (far scenery appears a little
   later), so they stay within the arcade's polygon budget.
 - **Mermaid Lake** was raised 41 units to fit the arcade's ground; an invisible lift is possible.
-- **Rendering defects on the five new courses:** the ground is not drawn (black) under the car for a few frames under
-  bridges and in Mermaid Lake's tunnel, a flat grey frame appears now and then, and thin black seams cross the road
-  (seen on National Park Speedway and Circuit Pixie).
-- **Tested only in MAME:** on macOS on Apple silicon only. Nothing was tried on real hardware. `dtools build` was
+- **Rendering defects on the five new courses:** one flat grey frame about a second after the start, and thin black
+  seams cross the road (seen on National Park Speedway and Circuit Pixie).
+- **Windows:** built and tested in GitHub Actions on Windows Server (`windows-latest`); the set has not yet been built
+  and played on a Windows PC.
+- **Tested only in MAME:** the set was played on macOS on Apple silicon only. Nothing was tried on real hardware. `dtools build` was
   tested on macOS on Apple silicon (Python 3.15.0, numpy 2.5.4) and on Linux x86-64, emulated (Docker `linux/amd64`
   `python:3.12-slim` on an Apple silicon host; Python 3.12.16, numpy 2.5.4): both write the same `daytona.zip`
-  members, byte for byte. `tools/build-mame.sh` is for macOS.
+  members, byte for byte. On Windows the offline tests ran in GitHub Actions (`windows-latest`); the build of the set
+  itself has not yet been run on Windows. `tools/build-mame.sh` is for macOS.
 
 If `dtools check` fails it prints one `problem:` line per fault naming the file and the expected value.
 

@@ -1354,3 +1354,66 @@ def test_texture_points_cut():
     for bad in ([], {1: (32,)}, {1: (32, 0)}, {1: (32.0, 32)}, {"1": (32, 32)}, {1: (True, 32)}):
         with pytest.raises(ConvertError):
             model.convert_model(m, points=bad)
+
+
+def _long_strip(x0=-600.0, x1=-360.0, z0=136.0, z1=164.0) -> Model:
+    """A flat double-sided textured strip (two triangles, one quad), arcade x x0..x1 and z z0..z1 (Dreamcast z
+    negated), u = x / 16 and v = Dreamcast z / 16: Mermaid Lake's start-straight strip in shape and place."""
+    pts = [(x0, -z0), (x0, -z1), (x1, -z0), (x1, -z1)]
+    return make_model([mesh([Strip(0x11, tuple(V(x, 41.0, z, u=x / 16, v=z / 16) for x, z in pts))], texture=0)])
+
+
+def _cell_rows(pieces):
+    """[(cell, points, uvs)] of every drawn record."""
+    return [(cell, poly.points, uv) for cell, ps in pieces.items() for pc in ps
+            for poly, uv in zip(P.polygons(pc.obj), pc.uvs) if poly.drawn]
+
+
+def _flat_area(points) -> float:
+    return float(np.linalg.norm(newell(points))) / 2
+
+
+def test_overhang():
+    """model.overhang: how far a polygon reaches past the cell of its centroid (edges at 128 j - 1024.5)."""
+    assert model.CELL_EDGES[0] == -1024.5 and model.CELL_EDGES[16] == 1023.5 and len(model.CELL_EDGES) == 17
+    assert model.overhang(((0, 0, 0), (10, 0, 0), (0, 0, 10))) == 0.0
+    # centroid x -480 (column 4: -512.5..-384.5), reaching -600 (87.5 past) and -360 (24.5 past)
+    assert model.overhang(((-600, 0, 140), (-360, 0, 140), (-360, 0, 160), (-600, 0, 160))) == pytest.approx(87.5)
+    # centroid z 193.3 (row 9: 127.5..255.5), reaching z 300: 44.5 past
+    assert model.overhang(((-500, 0, 140), (-390, 0, 140), (-390, 0, 300))) == pytest.approx(300 - 255.5)
+
+
+def test_cell_cut_long_strip():
+    """convert_model's `cell_cut` (build.CELL_CUT, v0.1.2): uncut, the strip lies in the cell of its centroid (0x94,
+    Mermaid Lake's); cut at 32 units it is cut at x -512.5 and -384.5 into pieces in cells 0x93, 0x94 and 0x95, each
+    inside its cell, together covering the strip's area exactly, every corner's (u, v) still u = x / 16, v = -z / 16
+    (the picture unchanged) and every cut corner exactly on the edge. A reach the strip does not pass cuts nothing;
+    a bad `cell_cut` is refused."""
+    m = _long_strip()
+    plain = model.convert_model(m)
+    assert sorted(plain) == [0x94] and len(_cell_rows(plain)) == 1
+    cut = model.convert_model(m, cell_cut=32.0)
+    rows = _cell_rows(cut)
+    assert sorted(cut) == [0x93, 0x94, 0x95] and len(rows) >= 3
+    assert sum(_flat_area(p) for _, p, _ in rows) == pytest.approx(240 * 28, rel=1e-6)
+    for cell, pts, uvs in rows:
+        assert model.overhang(pts) < 1e-3, (cell, pts)
+        assert model.cell_of(*np.array(pts)[:, [0, 2]].mean(0)) == cell
+        for (x, _, z), (u, v) in zip(pts, uvs):
+            assert u == pytest.approx(x / 16, abs=1e-4) and v == pytest.approx(-z / 16, abs=1e-4)
+            assert x in (-600.0, -360.0, -512.5, -384.5)
+    assert model.convert_model(m, cell_cut=100.0) == plain          # reaches 87.5: not cut
+    assert model.convert_model(m, cell_cut=87.0) != plain
+    for bad in (-1, math.nan, math.inf, True, "32", (32,)):
+        with pytest.raises(ConvertError):
+            model.convert_model(m, cell_cut=bad)
+
+
+def test_cell_cut_spans_both_axes():
+    """A polygon crossing a cell edge in x and in z is cut on both: four pieces' cells, each piece inside its cell,
+    the area kept."""
+    m = _long_strip(x0=-560.0, x1=-460.0, z0=100.0, z1=200.0)       # x crosses -512.5, z crosses 127.5
+    rows = _cell_rows(model.convert_model(m, cell_cut=0.0))
+    assert {c for c, _, _ in rows} == {0x83, 0x84, 0x93, 0x94}
+    assert sum(_flat_area(p) for _, p, _ in rows) == pytest.approx(100 * 100, rel=1e-6)
+    assert all(model.overhang(p) < 1e-3 for _, p, _ in rows)

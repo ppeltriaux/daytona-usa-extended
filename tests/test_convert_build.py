@@ -1842,6 +1842,29 @@ def _check_modes(walked, expected) -> None:
             assert not h.wrap_y and max(v for v, _ in q) <= 8 * h.height
 
 
+def test_decals_near_one_colour():
+    """v0.1.2 (out/debug/lake/report.md): Mermaid Lake's and Circuit Pixie's shadow texture 67 holds 994 texels
+    (17, 17, 17) and six one ARGB4444 step off ((17, 17, 34), (34, 34, 34) ...), up to 53 % alpha; kept, it was drawn
+    solid black under the start gantry, the bridge and the checkpoint arch. A blended translucent texture is a decal
+    when its modal visible colour holds at least DECAL_SHARE of the visible texels and none is more than DECAL_STEP
+    from it per channel: _modes_model's shadow with six visible texels one step off is still dropped; with 2 % of
+    them off, or one texel two steps off, it is kept (a picture, not a shadow)."""
+    m, blob = _modes_model()
+    shadow = np.frombuffer(blob[16384:18432], np.uint16).copy()
+    visible = np.flatnonzero(shadow >> 12)
+
+    def with_texels(idx, colour):
+        s = shadow.copy()
+        s[idx] = (s[idx] & 0xF000) | colour
+        return blob[:16384] + s.tobytes() + blob[18432:]
+
+    assert build.DECAL_STEP == 17 and build.DECAL_SHARE == 0.99
+    assert build.decals(m, with_texels(visible[:6], 0x112)) == (2, 3)
+    assert build.decals(m, with_texels(visible[:6], 0x221)) == (2, 3)
+    assert build.decals(m, with_texels(visible[:len(visible) // 50 + 1], 0x112)) == (3,)
+    assert build.decals(m, with_texels(visible[:1], 0x113)) == (3,)
+
+
 def test_model_scenery_modes(rs):
     """Task 5's rulings on a synthetic course: each Dreamcast (texture, mode) its own arcade header, read by its own
     polygons' walk (ruling 1: mirror_x / mirror_y for the flip modes, clamp no wrap bit with its points inside); a
@@ -2322,6 +2345,17 @@ def test_long_time(desert_empty):
         with pytest.raises(ConvertError):
             build.long_time(*bad)
 
+
+
+def test_race_times_refuses_overlapping_tables(desert_empty):
+    """build.race_times on a course converted into Beginner's slot (no `slot=`): Sega's per-difficulty tables overlap,
+    so distinct words per (mode, difficulty) cannot be written in place: ConvertError (the release set's courses have
+    their own disjoint tables: tests/test_convert_build_courses.py test_race_times_writes_in_place)."""
+    _, _, out = desert_empty
+    c = G.decode_course(out, 0)
+    tables = {key: tuple(1000 + 10 * key[0] + key[1] + i for i in range(len(w))) for key, (_, _, w) in c.time_tables.items()}
+    with pytest.raises(ConvertError, match="overlaps"):
+        build.race_times(out, c, tables)
 
 def test_mirrored_converted_set(desert_city):
     """docs/follow-ups/phase-07-m3b.md, "What M4 starts from": the mirror of a converted course works offline. mirrored_set of

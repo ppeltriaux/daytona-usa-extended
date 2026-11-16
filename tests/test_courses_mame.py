@@ -128,10 +128,14 @@ LAKE_RISES = 1
 LAKE_SECONDS = 175              # to frame 10066: past GO + 8000; every AI car on lap 2 by 9323, none on 3 before 10439
 LAKE_LAP_END = 4955             # the driven player reaches the lap line, lap 1 (then lets go: it stops at segment 60)
 LAKE_LONG_LAPS = 2
-LAKE_MAX, LAKE_MAX_AT, LAKE_COUNT_MAX = 3897, 3053, 4537
+LAKE_MAX, LAKE_MAX_AT, LAKE_COUNT_MAX = 3790, 1715, 4465
 """The drawn-polygon maximum per list over the player's lap and its frame, and the largest polygon count: unreduced
 (QUAD, REMESH and THIN name no 7), within BAR - THIN_MARGIN and course.OBC - THIN_MARGIN: 3,897 at 3053 (segment 162),
-354 under the bar; the count's largest the bunched field after the green light."""
+354 under the bar; the count's largest the bunched field after the green light. v0.1.2 (build.decals drops the shadow
+decal 67): 3,832 at the same frame, 65 fewer drawn, the count 4,491, 46 fewer, measured; the rest unchanged. v0.1.2's
+lake fix (build.CELL_CUT[7] 32 cuts the long polygons on the cell grid; build.QUAD[7] merges quads as on 4-6, since the
+cut alone put the maximum at 3,985 at 1715, over the target): 3,790 at 1715 (segment 495, just after the green light),
+the count 4,465, measured; the race unchanged (every car's ground calls equal)."""
 CALLS_LAKE_TO_TIME_OVER = {0: 22118, 1: 3118, 2: 486, 3: 1392, 4: 330, 6: 72, 8: 567}
 CALLS_LAKE_LONG_TIME = {0: 36881, 1: 5619, 2: 2884, 3: 2984, 4: 1079, 5: 2504, 6: 2571, 7: 2207, 8: 1815, 9: 1513,
                         10: 1407, 11: 348, 12: 1126, 13: 161, 14: 253, 15: 98, 16: 11, 17: 234, 18: 2305, 19: 1048,
@@ -166,7 +170,7 @@ def test_mermaid_lake_id7(tmp_path, romset_zip, disc):  # noqa: F811
     - the course is lifted (build.LIFT[7]: every ground call in the tunnel, segments 316-345, answers the road's own
       polygon: the race checks' "every ground call a polygon" and the cars' progress through it)."""
     assert build.LIFT.get(7) == 41.0 and build.NAMED_PROPS.get(7) == (2,)
-    assert 7 not in build.QUAD and 7 not in build.REMESH and 7 not in build.THIN
+    assert build.QUAD[7] == (10.0, 0.125) and 7 not in build.REMESH and 7 not in build.THIN   # v0.1.2: QUAD for CELL_CUT
     _gate(tmp_path, romset_zip, lake_set(RomSet.from_zip(romset_zip), disc), lake_gate())
 
 
@@ -390,13 +394,14 @@ City's mirror 1655)."""
 MIRROR_LAP_END = {12: 8323, 15: 4935}
 """Per mirror, the frame its player reaches the lap line, lap 1 (measured; the originals' PARK_LAP_END 8539 with the
 centred paddle, LAKE_LAP_END 4955 driven)."""
-MIRROR_MAX = {12: (3883, 6872, 4427), 15: (3837, 1715, 4537)}
+MIRROR_MAX = {12: (3883, 6872, 4427), 15: (3790, 1715, 4465)}
 """Per mirror, (the drawn-polygon maximum per list over its player's lap, its frame, the largest polygon count over
 it) (measured, frozen): 12 draws 3,883 at 6872 (segment 338), +129 on National Park Speedway's 3,754 (inside
 MIRROR_MARGIN; 368 under BAR), the count 4,427 (573 under course.OBC; v0.1.1's kind-3 volumes: 4,013 and 4,567
-before, 130 and 140 fewer, as the original); 15 draws 3,837 at 1715, 60 fewer than Mermaid
-Lake's 3,897, the count 4,537 at 1715, the field bunched after the green light (Mermaid Lake's own largest count, the
-same frame)."""
+before, 130 and 140 fewer, as the original); 15 draws 3,805 at 1715, 27 fewer than Mermaid
+Lake's 3,832, the count 4,491 at 1715, the field bunched after the green light (Mermaid Lake's own largest count, the
+same frame; v0.1.2's shadow decal 67 dropped: 3,837 and 4,537 before; v0.1.2's lake cell cut with QUAD[7]: 3,790
+and 4,465, Mermaid Lake's own figures, from 3,805 and 4,491)."""
 MIRROR_CAMERA = {12: (0.0036, 5, 0.8717, 0.8745), 15: (0.3402, 956, 0.8686, 1.6557)}
 """Per mirror, the scripted camera against its original's mirrored over CAMERA_FROM..PAIRED_TO (the fly-by), measured
 and frozen (4 decimals): (the largest x or y gap, the largest angle gap in s16 units: pitch, roll negated, yaw
@@ -933,10 +938,11 @@ PIXIE_LONG_LAPS = (4, 5, 6)
 """The laps each AI car completes over the long-time run: on the short oval (129 segments, an AI lap of 1,500-1,740
 frames) the field spreads over more than a lap before GO + 8000, so no frame past it has every car on one lap
 (measured: 9651 has cars on laps 4 and 5, the first on 6 at 9783); any of these three (`_drive_checks` with a tuple)."""
-PIXIE_MAX, PIXIE_MAX_AT, PIXIE_COUNT_MAX = 3723, 1805, 4521
+PIXIE_MAX, PIXIE_MAX_AT, PIXIE_COUNT_MAX = 3704, 1805, 4495
 """The drawn-polygon maximum per list over the player's lap and its frame, and the largest polygon count: with
 NAMED_PROPS[5], QUAD[5], REMESH[5] and the course's own view (build.VIEW[5], VIEW_12), within BAR - THIN_MARGIN and
-course.OBC - THIN_MARGIN (set before measuring)."""
+course.OBC - THIN_MARGIN (set before measuring). v0.1.2 (build.decals drops the shadow decal 67): 3,723 and
+4,521 before, 19 fewer drawn at the same frame and 26 fewer counted, measured; the rest unchanged."""
 CALLS_PIXIE_TO_TIME_OVER = {0: 11665, 1: 974, 2: 288, 3: 457, 4: 16, 5: 485, 6: 728, 7: 88, 10: 586, 11: 1133, 12: 1198,
                             13: 727, 14: 548, 15: 455, 16: 448, 17: 369, 18: 895, 19: 762, 20: 263, 21: 304, 22: 427,
                             23: 675, 24: 149, 25: 1507, 26: 1655, 27: 138, 28: 549, 29: 293, 30: 168, 31: 268, 32: 602,

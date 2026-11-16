@@ -153,7 +153,7 @@ id: "A mirror tests as its original"):
 | `PROGRESS_MASKS` | `0x175e0` | 4 x 4 | `0x176a0` | `0x3000330` | 0x1769c ld [id*4]: the progress-mask records (0x17688) |
 | `ACTOR_TABLES` (decoded) | `0x233bfc` | 4 x 4 | `0x46b8` | `0x3000370` | 0x46b4 ld [id*4] -> 0x501444 |
 | `GRID_BASES` (decoded) | `0x230e48` | 2 x 4 | `0xe8e0` | `0x30003b0` | 0xe8dc ldis [id*2]: the grid's base segment |
-| `CAR_TABLES_230E50` | `0x230e50` | 4 x 4 | `0xe758` | `0x30003d0` | 0xe754 ld [id*4]: u32[8] per car ident |
+| `CAR_TABLES_230E50` | `0x230e50` | 4 x 4 | `0xe758` | `0x30003d0` | 0xe754 ld [id*4]: the pit stalls, u32[8] per car ident (pit_stalls; "Pit") |
 | `OFFSETS_230B18` | `0x230b18` | 4 x 4 | `0x63bc` | `0x3000410` | 0x63b8 ld [id*4]: an index offset into 0x230b28 |
 | `TUNNEL_BYTES` | `0x230742` | 1 x 4 | `0x6d0c` | `0x3000450` | 0x6d08 ldob [id] -> car +0x85 |
 | `TUNNEL_STRIDE` | `0x230746` | 4 x 1 (keeps 1) | `0x6d18` | `0x3000460` | 0x6d14 ld: the stride of TUNNEL_LIGHTS (20), not per id; moved with the records it strides (entry 0 is the one read) |
@@ -748,6 +748,31 @@ Cross-check (Dreamcast): `CS_DATA0/1/2.BIN` hold exactly as many road cells as t
 and the same `n`; taking the cells by the arcade polygon index, the pit-flagged ones lie 13-125 / 8-37 / 33-48 units
 from the road line's centre at their segment (rough transform, x and -z scaled by 1.0286), apart from the road's (on
 Beginner and Expert closest at the entry and exit). The pit lane's geometry itself is on the TGP side (M1b).
+
+### The pit stop and its stalls (v0.1.2)
+
+Traced in MAME (`spike/pit_drive.py`, the pit probe `dtools/mame/lua/pit_log.lua`; `docs/follow-ups/v0.1.2.md`, "Pit
+stops"). The player car's handler (car `+0xc`, normally `0xdc64`) calls the trigger `0xdf9c`, which sets the handler to
+`0xe288` when the car stands on a `STEP_PIT_BOX` step (`+0x13c` bit 7), not on the final lap (`+0x70` < the laps at
+`0x5010ec` - 1), just arrived (`+0x13e` != `+0x13c`), heading within `[-0x17ff, +0x800]` of the box polygon's direction
+(`+0x48` - `+0x1c6` + 0x3fff in `0x2800..0x47ff`; `+0x1c6` is the ground polygon's direction word) and with `+0xd2`,
+`+0x9c`, `+0x9d`, `+0xd8`, `+0xf0` all 0. `0xe288` sets `0x501a8c` to 640 (the race timer stops while it is non-zero),
+the car's heading to the box's direction and the handler to the stop `0xe384`. Each frame the stop steers (`0xe744`)
+towards waypoint `+0xcc` of the car's stall and sets the car's speed from it; the waypoint is passed once it lies more
+than a quarter turn from the box's direction; at the seventh (`+0xcc` = 7, `0xe3b4`) the stop ends. Once the car stands (inferred)
+(`0x501220`'s `+0x18` = 0), `0x501a8c` counts down one a frame ("PIT WORK!"); at 0 the handler is `0xdc64` again
+(`0xe598`). Beginner, measured: the box at frame 3239, the car standing at (213.09, -59.01) for 640 frames, back on
+the road at 4489.
+
+The stalls are the per-id array `CAR_TABLES_230E50` (`course.pit_stalls`, `course.encode_pit_stalls`): per course id a
+pointer to `u32[8]`, one stall per car ident (`+0x4 & 7`, the cabinets of a link; a single cabinet is 0), each 7
+waypoints of 16 bytes (x, z, speed f32, a 0 word; the speed times the f32 at `0x286f68c` goes to `+0x44`). Beginner's
+stall 0: in at speed 150 along z = -62 from x 92.36, 100 at 162.36, 60 at 182.36, over to z = -59 at 202.36 (60),
+20 at 212.36, 0 at 242.36, then (300, -59, 0), the lane's end; the eight stalls about 21 units apart along the lane.
+Id 3 (the stub) repeats Advanced's. grow_ids gives ids 3-15 Beginner's, so until v0.1.2 a converted course's stop
+aimed at waypoints far behind the car and ended 7 frames after the box. The Dreamcast keeps the same lists for its
+eight courses (`dc.exe.pit_stalls`; "Executable tables" in docs/formats/dreamcast-disc.md); `build.pit_stalls` writes
+them for ids 3-7 (`release.RELEASE_PIT_IDS`).
 
 `pit` raises `CourseError` when there is not exactly one box polygon or the pit polygons' segments are not one run of
 the loop. `encode_pit` refuses a polygon outside the steps, listed twice or flagged `STEP_ROAD`, another polygon already
@@ -1854,8 +1879,9 @@ entries of each section):
 - Checkpoints and grid: the time corrections; what sets the mode `0x5fe5e0` and the difficulty `0x5fe59c`; the spawn
   table choice `0x5fe588`, `CAR_COUNTS` entry 1 and the link path of `0xeb00`; the spawn `kind` and `speed`
   (named after their use); the checkpoint `raw` half-word (0, no reader).
-- Pit: the pit lane's geometry (TGP side), the readers of `STEP_PIT` and `STEP_PIT_LANE`, the pit stop itself (`0xe288`
-  on); no run drove into a pit. (The `0x100` step flag on Advanced is its tunnel since Phase 6: "Per-segment
+- Pit: the pit lane's geometry (TGP side), the readers of `STEP_PIT` and `STEP_PIT_LANE`; the meaning of the trigger's
+  `+0xd2`, `+0x9c`, `+0x9d`, `+0xd8`, `+0xf0` (all 0 in the driven stops). The stop itself was driven in v0.1.2 ("The
+  pit stop and its stalls"). (The `0x100` step flag on Advanced is its tunnel since Phase 6: "Per-segment
   flags".)
 - Per-segment flags: the meanings of bits 8 (`SEGMENT_TUNNEL`, a tunnel) and 10 (`SEGMENT_AI_FREE`, the AI keeps
   its line) are inferred from their readers, not checked in a run that sets them; no Dreamcast source for Expert's (the converter writes zeros).

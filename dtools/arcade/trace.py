@@ -66,7 +66,7 @@ def resolve(addr: int) -> tuple[str, int] | None:
 def parse_trace(path: Path) -> list[Event]:
     events: list[Event] = []
     end = None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
             p = line.split()
             if not p:

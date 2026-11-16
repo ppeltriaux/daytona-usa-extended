@@ -1,0 +1,203 @@
+name: Windows MAME and dtools
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mame:
+    if: github.repository == 'ppeltriaux/daytona-usa-extended'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      ZIP_NAME: daytona-usa-extended-mame-0.289-win64.zip
+      SRC_NAME: daytona-usa-extended-mame-0.289-src.tar.gz
+    steps:
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          install: >-
+            git make zip
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-libc++ mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-libiconv
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+      - name: Clone MAME 0.289 and apply the patch
+        run: |
+          git clone --depth 1 --branch mame0289 https://github.com/mamedev/mame.git mame
+          cd mame
+          git apply ../repo/tools/mame-daytona-rom-space.patch
+      - name: Build
+        working-directory: mame
+        env:
+          SUBTARGET: model2
+          REGENIE: 1
+          NOWERROR: 1
+          USE_SDL3: 1
+          OVERRIDE_AR: llvm-ar
+          ARCHOPTS: "-fuse-ld=lld -static-libgcc -static-libstdc++"
+          LDOPTS: "-liconv"   # libSDL3.a needs libiconv (SDL_iconv)
+        run: |
+          make -j"$(nproc)" SOURCES=src/mame/sega/model2.cpp
+      - name: Validate
+        working-directory: mame
+        run: ./model2.exe -validate
+      - name: Stage the zip
+        run: |
+          set -euo pipefail
+          mkdir stage
+          cp mame/model2.exe stage/mame.exe
+          cp mame/COPYING stage/COPYING
+          cp repo/tools/mame-daytona-rom-space.patch stage/
+          mkdir -p stage/licenses/mame
+          cp mame/docs/legal/* stage/licenses/mame/     # MAME's own third-party licence texts
+          cd mame
+          ldd model2.exe | { grep -i ucrt64 || true; } | awk '{print $3}' | sort -u > ../dlls.txt
+          echo "DLLs from ucrt64 (none expected: the link is static):"; cat ../dlls.txt
+          : > ../pkgs.txt
+          while read -r dll; do
+            [ -n "$dll" ] || continue
+            cp "$dll" ../stage/
+            pacman -Qo "$dll" | awk '{print $(NF-1)}' >> ../pkgs.txt
+          done < ../dlls.txt
+          # The static libraries linked in: the packages that own them
+          # (the mingw-w64 CRT, libmingw32.a and libmingwex.a, is linked in too)
+          for lib in /ucrt64/lib/libSDL3.a /ucrt64/lib/libiconv.a /ucrt64/lib/libstdc++.a \
+                     "$(gcc -print-libgcc-file-name)" /ucrt64/lib/libwinpthread.a \
+                     /ucrt64/lib/libmingw32.a /ucrt64/lib/libmingwex.a; do
+            if [ -f "$lib" ]; then
+              pacman -Qo "$lib" | awk '{print $(NF-1)}' >> ../pkgs.txt
+            else
+              case "$lib" in
+                *libSDL3.a|*libiconv.a|*libmingw32.a|*libmingwex.a)
+                  echo "::error::static library not found: $lib"; exit 1 ;;
+                *) echo "::warning::static library not found: $lib" ;;
+              esac
+            fi
+          done
+          sort -u ../pkgs.txt -o ../pkgs.txt
+          echo "Packages whose licences ship:"; cat ../pkgs.txt
+          while read -r pkg; do [ -n "$pkg" ] || continue; pacman -Q "$pkg"; done < ../pkgs.txt > ../pkg-versions.txt
+          cat ../pkg-versions.txt
+          while read -r pkg; do
+            [ -n "$pkg" ] || continue
+            # The licence files the package actually installs
+            files="$(pacman -Ql "$pkg" | awk '{print $2}' | grep '/share/licenses/.*[^/]$' || true)"
+            [ -n "$files" ] || { echo "::error::no licence file found for $pkg"; exit 1; }
+            d="../stage/licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            mkdir -p "$d"
+            while read -r f; do cp "$f" "$d/"; done <<< "$files"
+          done < ../pkgs.txt
+          [ -n "$(ls -A ../stage/licenses)" ] || { echo "::error::licenses/ is empty"; exit 1; }
+          cd ..
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          cat > stage/README.txt <<README
+          Daytona USA Extended - patched MAME 0.289 for Windows (x64)
+
+          This is MAME 0.289 (mame0289) with tools/mame-daytona-rom-space.patch applied (included), built with
+          MSYS2 UCRT64. It runs only the "daytona" set built by the Daytona USA Extended converter; stock MAME 0.289
+          will not run that set. It is not an official MAME build.
+
+          Licence: GPL-2.0 (COPYING). The exe is statically linked; the licences of the libraries linked in
+          (SDL3, libiconv, the GCC runtime, winpthreads) are in the licenses folder.
+          licenses/mame holds the licence texts MAME's own bundled third-party code needs (BSD, BSL, CC0, GPL, LGPL, MIT, Zlib).
+          Source: ${SRC_NAME} (the patched MAME tree this was compiled from), published alongside this zip, with
+          the MSYS2 source packages of the libiconv and sdl3 versions below (daytona-usa-extended-mame-0.289-lib-sources).
+          All of it is on the Releases page: https://github.com/ppeltriaux/daytona-usa-extended/releases
+          Build flags: make SOURCES=src/mame/sega/model2.cpp SUBTARGET=model2 USE_SDL3=1 REGENIE=1 NOWERROR=1
+            OVERRIDE_AR=llvm-ar ARCHOPTS="-fuse-ld=lld -static-libgcc -static-libstdc++" LDOPTS="-liconv"
+          Packages linked statically (pacman -Q, MSYS2 UCRT64; the gcc runtime, libiconv, sdl3, winpthreads and the
+          mingw-w64 CRT):
+          $(sed 's/^/  /' pkg-versions.txt)
+          Built by: ${RUN_URL}
+          README
+          out="$PWD/$ZIP_NAME"
+          (cd stage && zip -qr "$out" .)
+          ls -l "$out"
+      - name: Validate the unzipped build
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "unzipped"
+          Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          Expand-Archive -Path "$env:GITHUB_WORKSPACE\$env:ZIP_NAME" -DestinationPath $dir
+          Set-Location $dir
+          # A clean PATH: no runner toolchain DLLs (Strawberry Perl, Git) to hide a DLL missing from the zip
+          $env:PATH = "$dir;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+          & "$dir\mame.exe" -validate
+          if ($LASTEXITCODE -ne 0) { throw "mame.exe -validate failed: $LASTEXITCODE" }
+      - name: Source archive
+        run: |
+          set -euo pipefail
+          cd mame
+          git -c user.name=ci -c user.email=ci@invalid commit -am patch
+          git archive --format=tar.gz --prefix=mame-0.289-daytona/ HEAD > "../$SRC_NAME"
+          ls -l "../$SRC_NAME"
+      - name: Library sources (libiconv, sdl3)
+        run: |
+          set -euo pipefail
+          mkdir lib-sources
+          for name in libiconv sdl3; do
+            ver="$(pacman -Q "mingw-w64-ucrt-x86_64-$name" | awk '{print $2}')"
+            file="mingw-w64-$name-$ver.src.tar.zst"
+            curl -fSL --retry 3 -o "lib-sources/$file" "https://repo.msys2.org/mingw/sources/$file" \
+              || { echo "::error::cannot download $file"; exit 1; }
+            ls -l "lib-sources/$file"
+          done
+      - name: Does Windows tar.exe read LZMA2 .7z?
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP "tar7z"
+          New-Item -ItemType Directory -Force $t | Out-Null
+          Set-Location $t
+          1..2000 | ForEach-Object { "line $_" } | Set-Content a.txt
+          & "C:\Program Files\7-Zip\7z.exe" a -m0=lzma2 test.7z a.txt | Out-Null
+          $answer = "unknown"
+          try {
+            & "C:\Windows\System32\tar.exe" -tvf test.7z
+            $answer = if ($LASTEXITCODE -eq 0) { "yes" } else { "no" }
+          } catch {
+            Write-Host "probe error: $_"
+          }
+          "tar.exe reads LZMA2 .7z: $answer" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "tar.exe reads LZMA2 .7z: $answer"
+          exit 0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daytona-usa-extended-mame-0.289-win64
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daytona-usa-extended-mame-0.289-src
+          path: ${{ env.SRC_NAME }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daytona-usa-extended-mame-0.289-lib-sources
+          path: lib-sources
+          if-no-files-found: error
+
+  dtools:
+    if: github.repository == 'ppeltriaux/daytona-usa-extended'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.15"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q -o addopts="" -p no:cacheprovider

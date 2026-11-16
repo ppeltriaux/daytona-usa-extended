@@ -1443,6 +1443,84 @@ def encode_pit(n: int, steps: list[Step], p: Pit) -> list[Step]:
     return out
 
 
+# The pit stalls (v0.1.2): the per-id array CAR_TABLES_230E50. The trigger 0xdf9c starts the stop (handler 0xe288)
+# when the player's car arrives on the box polygon; the stop 0xe384 steers the car (0xe744) to waypoint car +0xcc of
+# its stall (id's entry -> u32[8] -> by car ident +0x4 & 7), sets its speed from the waypoint's third word, steps to the
+# next waypoint once the one aimed at lies more than a quarter turn from the box polygon's direction (+0x1c6), and
+# ends at the seventh; the stop itself (the car standing, the race timer held by 0x501a8c) counts 0x501a8c down from
+# 640. A single cabinet is ident 0. docs/follow-ups/v0.1.2.md, "Pit stops".
+
+PIT_STALLS = 8
+"""Stalls per course id: one per car ident (car +0x4 & 7), the cabinets of a link."""
+PIT_WAYPOINTS = 7
+"""Waypoints per stall: the stop ends when car +0xcc reaches it (0xe3b4)."""
+PIT_WAYPOINT_SIZE = 16
+"""x, z, speed f32, then a word that is 0 on the original set (not read by 0xe744)."""
+PIT_STALLS_SIZE = 4 * PIT_STALLS + PIT_STALLS * PIT_WAYPOINTS * PIT_WAYPOINT_SIZE
+"""encode_pit_stalls' bytes: the eight stall pointers, then the stalls."""
+
+
+class PitWaypoint(NamedTuple):
+    """One waypoint of a pit stall: where the car steers (x, z, world units) and the speed it is set to (the third
+    word, times a constant at 0x286f68c, to car +0x44)."""
+    x: float
+    z: float
+    speed: float
+
+
+def pit_stalls_at(rs: RomSet, course: int) -> int:
+    """The address course id `course`'s CAR_TABLES_230E50 entry names: its eight stall pointers. CourseError for an id
+    outside 0..15 or a word that cannot be read."""
+    course = _int(course, "course id", 0, COURSE_IDS - 1, "pit stalls")
+    return _u32(rs, id_table(rs, "CAR_TABLES_230E50") + 4 * course)
+
+
+def pit_stalls(rs: RomSet, course: int) -> tuple[tuple[PitWaypoint, ...], ...]:
+    """Course id `course`'s pit stalls: PIT_STALLS stalls (car ident 0-7) of PIT_WAYPOINTS waypoints, through its
+    CAR_TABLES_230E50 entry (id_table: the grown table on a grown set). CourseError for an id outside 0..15, a word
+    or record that cannot be read, a value that is not finite or a fourth word that is not 0."""
+    at = pit_stalls_at(rs, course)
+    what = f"course id {course}: pit stalls at {at:#x}"
+    out = []
+    for k in range(PIT_STALLS):
+        p = _u32(rs, at + 4 * k)
+        pts = []
+        for j in range(PIT_WAYPOINTS):
+            x, z, v, pad = struct.unpack("<3fI", _read(rs, p + PIT_WAYPOINT_SIZE * j, PIT_WAYPOINT_SIZE,
+                                                       f"{what}: stall {k}"))
+            if not all(math.isfinite(f) for f in (x, z, v)) or pad:
+                raise CourseError(f"{what}: stall {k} waypoint {j} at {p + PIT_WAYPOINT_SIZE * j:#x} is "
+                                  f"{(x, z, v, pad)}: not three finite floats and a 0 word")
+            pts.append(PitWaypoint(x, z, v))
+        out.append(tuple(pts))
+    return tuple(out)
+
+
+def encode_pit_stalls(stalls, addr: int) -> bytes:
+    """The bytes of `stalls` (PIT_STALLS stalls of PIT_WAYPOINTS (x, z, speed)) for i960 address `addr`: the eight
+    stall pointers, then the stalls back to back (x, z, speed f32, 0); PIT_STALLS_SIZE bytes, which a course id's
+    CAR_TABLES_230E50 entry names by `addr`. CourseError for a wrong count, a value that is not finite or not exactly
+    single precision, or an address that is not 4-aligned u32 room for the block."""
+    what = "pit stalls"
+    if not is_int(addr) or addr % 4 or not 0 <= addr <= 0xFFFFFFFF - PIT_STALLS_SIZE:
+        raise CourseError(f"{what}: address {addr!r} is not 4-aligned room for {PIT_STALLS_SIZE} bytes")
+    stalls = _seq(stalls, None, "stalls", what)
+    if len(stalls) != PIT_STALLS:
+        raise CourseError(f"{what}: {len(stalls)} stalls, expected {PIT_STALLS} stalls")
+    body = bytearray()
+    for k, st in enumerate(stalls):
+        st = _seq(st, None, f"stall {k}", what)
+        if len(st) != PIT_WAYPOINTS:
+            raise CourseError(f"{what}: stall {k} has {len(st)} waypoints, expected {PIT_WAYPOINTS} waypoints")
+        for j, w in enumerate(st):
+            b = _f32(w, 3, f"stall {k} waypoint {j}", what)
+            if struct.unpack("<3f", b) != tuple(float(v) for v in w):
+                raise CourseError(f"{what}: stall {k} waypoint {j} {tuple(w)} is not exactly single precision")
+            body += b + bytes(4)
+    return struct.pack(f"<{PIT_STALLS}I", *(addr + 4 * PIT_STALLS + PIT_WAYPOINTS * PIT_WAYPOINT_SIZE * k
+                                             for k in range(PIT_STALLS))) + bytes(body)
+
+
 # --- Select screen, backdrop, rankings ---------------------------------------------------------------------------
 #
 # The tile-layer primitives they are built from (tile maps, chars, char and palette lists, upload sets, backdrop
@@ -2004,7 +2082,8 @@ _ID_SPECS = (
     ("PROGRESS_MASKS", 0x000175E0, 4, (0x176A0,), 3, "0x1769c ld [id*4]: the progress-mask records (0x17688)"),
     ("ACTOR_TABLES", ACTOR_TABLES, 4, (0x46B8,), 3, "0x46b4 ld [id*4] -> 0x501444"),
     ("GRID_BASES", GRID_BASES, 2, (0xE8E0,), 3, "0xe8dc ldis [id*2]: the grid's base segment"),
-    ("CAR_TABLES_230E50", 0x00230E50, 4, (0xE758,), 3, "0xe754 ld [id*4]: u32[8] per car ident"),
+    ("CAR_TABLES_230E50", 0x00230E50, 4, (0xE758,), 3, "0xe754 ld [id*4]: the pit stalls, u32[8] per car ident "
+                                                         "(pit_stalls)"),
     ("OFFSETS_230B18", 0x00230B18, 4, (0x63BC,), 3, "0x63b8 ld [id*4]: an index offset into 0x230b28"),
     ("TUNNEL_BYTES", 0x00230742, 1, (0x6D0C,), 3, "0x6d08 ldob [id] -> car +0x85"),
     ("TUNNEL_STRIDE", 0x00230746, 4, (0x6D18,), 1, "0x6d14 ld: the stride of TUNNEL_LIGHTS (20), not per id; moved "

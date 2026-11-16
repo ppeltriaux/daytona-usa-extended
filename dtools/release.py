@@ -11,8 +11,12 @@ tools/desert_city_playtest.py `m5b_set`, adds the start words) with the release 
 3. `course.grow_rankings` (a ranking table per id);
 4. `select.patch_select(..., select.ENTRIES)`: the release row, every course under its own name (the originals' over
    their name box, select.WINDOW_NAME);
-5. `build.long_time` on the time tables of each of `long_ids` (RELEASE_LONG_IDS, the converted courses: their real
-   times are M6's; the originals keep the arcade's);
+5. `build.race_times` on each of RELEASE_TIME_IDS (v0.1.2: the converted courses' own time tables, build.RACE_TIMES;
+   the originals keep the arcade's), then `build.long_time` on each of `long_ids` (none by default; test-only, as
+   `times=False`: the gates' sets);
+5b. `build.pit_stalls` on each of RELEASE_PIT_IDS (v0.1.2: the converted courses' own pit stalls, the Dreamcast's,
+   at the end of build.ID_DATA_FREE; before, they stopped on Beginner's and the stop ended at once); test-only
+   `pits=False` leaves them out (v0.1.1's chain);
 6. `title.extended_title`: "Extended" in the attract logo (title.PICKED, Pascal's pick), in the free custom data run
    title.TITLE_RUN (outside build.ID_DATA_FREE, so the views below land where they land without it) and two
    repointed words;
@@ -41,7 +45,7 @@ import zipfile
 import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from dtools import config
 from dtools.arcade import course as C
@@ -62,9 +66,14 @@ class ReleaseError(DecodeError):
 RELEASE_CONVERTED = (3, 4, 7, 6, 5)
 """The Dreamcast courses the release set converts, in order, each at its own course id: Desert City, National Park
 Speedway, Mermaid Lake, Rin Rin Rink, Circuit Pixie (Phase 11's order, tests/test_courses_mame.py M5B_CONVERTED)."""
+RELEASE_TIME_IDS = (3, 4, 5, 6, 7)
+"""The course ids whose time tables `release_set` rewrites with build.RACE_TIMES (v0.1.2): the converted courses."""
 RELEASE_LONG_IDS = (3, 4, 5, 6, 7)
-"""The course ids whose start time `release_set` raises to build.LONG_TIME by default: the converted courses (the
-M5b playtest set's, tools/desert_city_playtest.py M5B_LONG_TIME_IDS)."""
+"""The course ids whose start time v0.1-v0.1.1 raised to build.LONG_TIME (the M5b playtest set's, tools/
+desert_city_playtest.py M5B_LONG_TIME_IDS): `release_set(rs, disc, RELEASE_LONG_IDS, times=False, pits=False)` is
+v0.1.1's release chain."""
+RELEASE_PIT_IDS = (3, 4, 5, 6, 7)
+"""The course ids `release_set` gives the Dreamcast's pit stalls (build.pit_stalls, v0.1.2): the converted courses."""
 
 
 def _long_ids(long_ids) -> tuple[int, ...]:
@@ -77,27 +86,37 @@ def _long_ids(long_ids) -> tuple[int, ...]:
     return tuple(int(k) for k in long_ids)
 
 
-def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = RELEASE_LONG_IDS,
-                *, title: bool = True) -> RomSet:
+def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
+                *, title: bool = True, times: bool = True, pits: bool = True) -> RomSet:
     """The release set from the stock `rs` and the US Dreamcast `disc` (the module docstring's chain): ids 3-7
-    converted (RELEASE_CONVERTED), the rankings, the select with the release row (select.ENTRIES), the start time
-    raised on `long_ids` (RELEASE_LONG_IDS; `()` for none), the Extended title (title.extended_title), then the
-    views. `title=False` leaves the title step out (test-only: the release gates compare the titled set's ground log
-    with the untitled one's, tests/test_courses_mame.py `_gate`). ReleaseError for `rs` not a RomSet, `disc` not a
-    DcDisc, a long id that is not one of 3-7 (bool refused) or `title` not a bool (title is keyword-only), before any step runs."""
+    converted (RELEASE_CONVERTED), the rankings, the select with the release row (select.ENTRIES), the converted
+    courses' own time tables (build.race_times on RELEASE_TIME_IDS), the start time raised on `long_ids` (none by
+    default; e.g. RELEASE_LONG_IDS), the converted courses' own pit stalls (build.pit_stalls on RELEASE_PIT_IDS), the
+    Extended title (title.extended_title), then the views. Test-only: `pits=False` leaves the pit stalls out (with
+    `times=False` and RELEASE_LONG_IDS, v0.1.1's chain);
+    `times=False` leaves the race times out (the converted courses keep Beginner's words, as v0.1-v0.1.1: the release
+    gates' time-over frames are measured on those), `title=False` the title step (the release gates compare the
+    titled set's ground log with the untitled one's, tests/test_courses_mame.py `_gate`). ReleaseError for `rs` not a
+    RomSet, `disc` not a DcDisc, a long id that is not one of 3-7 (bool refused), or `title`, `times` or `pits` not a
+    bool (all keyword-only), before any step runs."""
     if not isinstance(rs, RomSet):
         raise ReleaseError(f"{type(rs).__name__} is not a RomSet")
     if not isinstance(disc, DcDisc):
         raise ReleaseError(f"{type(disc).__name__} is not a DcDisc")
     long_ids = _long_ids(long_ids)
-    if not isinstance(title, bool):
-        raise ReleaseError(f"title {title!r:.60} is not a bool")
+    for name, v in (("title", title), ("times", times), ("pits", pits)):
+        if not isinstance(v, bool):
+            raise ReleaseError(f"{name} {v!r:.60} is not a bool")
     out = C.widen_ids(C.guard_new_ids(C.grow_ids(rs)))
     for n in RELEASE_CONVERTED:
         out = build.converted_set(out, disc, n, slot=n, scenery="model")
     out = select.patch_select(C.grow_rankings(out), select.ENTRIES)
+    for k in RELEASE_TIME_IDS if times else ():
+        out = build.race_times(out, golden.decode_course(out, k))
     for k in long_ids:
         out = build.long_time(out, golden.decode_course(out, k))
+    for k in RELEASE_PIT_IDS if pits else ():
+        out = build.pit_stalls(out, disc, k)
     return build.viewed_set(_title.extended_title(out) if title else out)
 
 
@@ -138,6 +157,12 @@ CUSTOM_NOTE = ("stock MAME 0.289 will not run this set: its ROM regions are grow
                "MAME once with tools/build-mame.sh (MAME 0.289 plus tools/mame-daytona-rom-space.patch) and run the "
                "command from the repository root. Keep -nvram_directory: MAME's default nvram/daytona belongs to the "
                "stock game, whose best times this set's first boot would reset.")
+WINDOWS_MAME_ZIP = "daytona-usa-extended-mame-0.289-win64.zip"
+"""The prebuilt patched MAME for Windows (mame.exe and what it needs), the zip the Windows texts name."""
+_WINDOWS_NOTE = ("stock MAME 0.289 will not run this set: its ROM regions are grown past the stock ones. Unzip "
+                 f"{WINDOWS_MAME_ZIP} (the custom MAME 0.289 with tools/mame-daytona-rom-space.patch, prebuilt) and run "
+                 "the command from the folder you unzipped it into. Keep -nvram_directory: MAME's default nvram/daytona "
+                 "belongs to the stock game, whose best times this set's first boot would reset.")
 _CHUNK = 16 << 20
 _UNREADABLE = (DecodeError, OSError, IndexError, struct.error, RecursionError)
 """What reading a damaged disc image raises (iso.py parses the bytes as they are: IsoError for an extent past the end,
@@ -301,6 +326,8 @@ def _check_out(out: Path, roms: Path) -> tuple[list[str], list[str]]:
                 f"another --out)"], []
     if out.exists() and not out.is_dir():
         return [f"output directory {out} is a file, not a directory"], []
+    if platform.system() == "Windows" and _windows_out_problem(str(out)):
+        return [_windows_out_problem(str(out))], []
     try:
         out.mkdir(parents=True, exist_ok=True)
         probe = out / ".dtools-write-test"
@@ -366,11 +393,46 @@ def _shell_path(p: Path) -> str:
     return shlex.quote(text) if any(c in text for c in '"$`\\!\n') else f'"{text}"'
 
 
-def mame_command(out: Path) -> str:
-    """The command that runs the set in `out`: the custom MAME (build/mame/model2, from the repository root) with the
-    set's own NVRAM directory, the paths quoted for a POSIX shell (_shell_path)."""
+def _windows_out_problem(text: str) -> str:
+    """Why `text` cannot be the Windows output folder in the run command ("" when it can): a drive root or a path
+    ending in a backslash, whose last `\\` would escape the closing double quote in cmd."""
+    win = PureWindowsPath(text)
+    is_root = bool(win.root) and win.parent == win or (bool(win.drive) and not win.root and len(win.parts) == 1)
+    if text.endswith("\\") or is_root:
+        return (f"the output folder {text} is a drive root or ends with a backslash, which would escape the closing "
+                "quote in the run command: use a named folder without a trailing backslash")
+    return ""
+
+
+def mame_command(out: Path, system: str | None = None) -> str:
+    """The command that runs the set in `out`: off Windows the custom MAME (build/mame/model2, from the repository
+    root) with the set's own NVRAM directory, the paths quoted for a POSIX shell (_shell_path); on Windows (`system`
+    "Windows", default platform.system()) `mame.exe` with Windows path text in double quotes. ReleaseError for a
+    Windows path holding `"`, `%`, `$` or a backtick (cmd and PowerShell would expand them: rename the folder)."""
     out = Path(out)
-    return f"build/mame/model2 daytona -rompath {_shell_path(out)} -nvram_directory {_shell_path(out / 'nvram')}"
+    if (platform.system() if system is None else system) != "Windows":
+        return f"build/mame/model2 daytona -rompath {_shell_path(out)} -nvram_directory {_shell_path(out / 'nvram')}"
+    text = str(out)
+    for c in '"%$`':
+        if c in text:
+            raise ReleaseError(f"the output folder {text} holds {c!r}, which cmd or PowerShell would expand in the "
+                               "run command: rename the folder")
+    win = PureWindowsPath(text)
+    if _windows_out_problem(text):
+        raise ReleaseError(_windows_out_problem(text))
+    return f'.\\mame.exe daytona -rompath "{win}" -nvram_directory "{win / "nvram"}"'
+
+
+def custom_note(system: str | None = None) -> str:
+    """The custom-build note: CUSTOM_NOTE off Windows, the prebuilt zip's note on Windows."""
+    return _WINDOWS_NOTE if (platform.system() if system is None else system) == "Windows" else CUSTOM_NOTE
+
+
+def run_from(system: str | None = None) -> str:
+    """The line before the run command: where to run it from."""
+    if (platform.system() if system is None else system) == "Windows":
+        return f"run it from the folder you unzipped {WINDOWS_MAME_ZIP} into:"
+    return "run it from the repository root, with the custom MAME:"
 
 
 def _commit() -> str:
@@ -435,9 +497,8 @@ def write_release(rs: RomSet, out: Path, rom_dir: Path, *, checks: Sequence[str]
                  "member sha1 (each file daytona.zip holds; the zip's own bytes vary with its timestamps):",
                  *(f"  {n} {h}" for n, h in members.items()), "",
                  "region sha1:", *(f"  {r} {h}" for r, h in region_sha1(rs).items()), "",
-                 "run it from the repository root, with the custom MAME:", f"  {mame_command(out)}", "",
-                 f"note: {CUSTOM_NOTE}"]
-        _stage(out, REPORT, staged, lambda tmp: tmp.write_text("\n".join(lines) + "\n"))
+                 run_from(), f"  {mame_command(out)}", "", f"note: {custom_note()}"]
+        _stage(out, REPORT, staged, lambda tmp: tmp.write_text("\n".join(lines) + "\n", encoding="utf-8"))
         # all three complete: the earlier report goes first, so it never sits beside a zip it does not describe
         (out / REPORT).unlink(missing_ok=True)
         for name in (ROM_ZIP, IO_ZIP, REPORT):

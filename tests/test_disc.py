@@ -1,6 +1,7 @@
 """Tests for the Dreamcast disc wrapper, using synthetic GD-ROM track images."""
 
 import subprocess
+import sys
 import re
 from pathlib import Path
 
@@ -125,20 +126,13 @@ def test_7z_is_extracted_once_into_out(tmp_path, monkeypatch):
     )
     out = tmp_path / "out"
 
-    calls = []
-    real_run = subprocess.run
-
-    def counting_run(*args, **kwargs):
-        calls.append(args[0])
-        return real_run(*args, **kwargs)
-
-    monkeypatch.setattr(disc_module.subprocess, "run", counting_run)
+    extractions = _count_extractions(monkeypatch)
 
     first = DcDisc.open(archive, out=out)
     second = DcDisc.open(archive, out=out)
 
     assert first.product == second.product == PRODUCT
-    assert sum(1 for c in calls if c[0] in ("tar", "bsdtar") and "-xf" in c) == 2      # the cue, then track 3; once
+    assert len(extractions()) == 2                                       # the cue, then track 3; once
     assert sorted(p.name for p in (out / "dc" / "Game").iterdir()) == sorted(["Game.cue", TRACK3])
     assert sorted(p.name for p in archive_dir.iterdir()) == ["Game.7z"]
     _assert_extracted(src, out / "dc" / "Game")
@@ -161,15 +155,17 @@ def _assert_extracted(src, dest, prefix=""):
 
 
 def _count_extractions(monkeypatch):
-    calls = []
-    real_run = subprocess.run
+    """Record each member extracted, at the reader seam: tar or py7zr, whichever reads the archive on this system."""
+    members = []
+    for cls in (disc_module._TarArchive, disc_module._SevenZipArchive):
+        real = cls.extract
 
-    def counting_run(*args, **kwargs):
-        calls.append(args[0])
-        return real_run(*args, **kwargs)
+        def recording(self, member, dest, _real=real):
+            members.append(member)
+            return _real(self, member, dest)
 
-    monkeypatch.setattr(disc_module.subprocess, "run", counting_run)
-    return lambda: sum(1 for c in calls if c[0] in ("tar", "bsdtar") and "-xf" in c)
+        monkeypatch.setattr(cls, "extract", recording)
+    return lambda: list(members)
 
 
 @needs_bsdtar
@@ -183,7 +179,7 @@ def test_leftover_partial_extraction_is_not_reused(tmp_path, monkeypatch):
     extractions = _count_extractions(monkeypatch)
     disc = DcDisc.open(archive, out=out)
     assert disc.product == PRODUCT
-    assert extractions() == 2                                             # the cue, then track 3
+    assert len(extractions()) == 2                                             # the cue, then track 3
     assert not partial.exists()
     _assert_extracted(tmp_path / "src", out / "dc" / "Game")
 
@@ -195,7 +191,7 @@ def test_nested_archive_layout_is_extracted_once(tmp_path, monkeypatch):
     extractions = _count_extractions(monkeypatch)
     assert DcDisc.open(archive, out=out).product == PRODUCT
     assert DcDisc.open(archive, out=out).product == PRODUCT
-    assert extractions() == 2                                             # the cue, then track 3; once
+    assert len(extractions()) == 2                                             # the cue, then track 3; once
     _assert_extracted(tmp_path / "src", out / "dc" / "Game", "sub/")
 
 
@@ -253,18 +249,11 @@ def test_saturn_7z_is_refused_after_extracting_the_cue_alone(tmp_path, monkeypat
     subprocess.run([TAR, "-cf", str(archive), "--format", "7zip", "-C", str(src), "Sat.cue", *SATURN_TRACKS],
                    check=True)
     out = tmp_path / "out"
-    calls = []
-    real_run = subprocess.run
-
-    def recording_run(*args, **kwargs):
-        calls.append(list(args[0]))
-        return real_run(*args, **kwargs)
-
-    monkeypatch.setattr(disc_module.subprocess, "run", recording_run)
+    extractions = _count_extractions(monkeypatch)
     with pytest.raises(DiscError, match=r"SEGA SEGASATURN, product MK-81200"):
         DcDisc.open(archive, out=out)
-    extracted = [c[c.index("-C") + 2:] for c in calls if c[0] in ("tar", "bsdtar") and "-xf" in c]
-    assert extracted == [["Sat.cue"]]
+    extracted = extractions()
+    assert extracted == ["Sat.cue"]
     assert not (out / "dc" / "Sat").exists()
     assert not (out / "dc" / "Sat.partial").exists()
 
@@ -280,6 +269,8 @@ def test_missing_tar_raises_disc_error(tmp_path, monkeypatch):
     empty = tmp_path / "empty-bin"
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(disc_module, "_tar_program", lambda: "dtools-no-such-tar")   # Windows finds System32 even without PATH
+    monkeypatch.setitem(sys.modules, "py7zr", None)                      # no py7zr fallback either
     with pytest.raises(DiscError, match="tar"):
         DcDisc.open(archive, out=tmp_path / "out")
 
@@ -334,6 +325,7 @@ def test_dc_errors_are_decode_errors():
 
 
 @needs_bsdtar
+@pytest.mark.skipif(sys.platform == "win32", reason="names with * or ? cannot exist on a Windows filesystem")
 def test_archive_member_names_are_not_patterns(tmp_path):
     """A member name holding glob characters reaches tar literally: only that member is read."""
     src = tmp_path / "src"
@@ -350,6 +342,23 @@ def test_archive_member_names_are_not_patterns(tmp_path):
     assert [p.name for p in dest.iterdir()] == ["Gam*.cue"]
     assert disc_module._archive_head(archive, "Gam[e].cue") == b"x"
     assert disc_module._archive_head(archive, "Gam*.cue").startswith(b"FILE")
+
+
+@needs_bsdtar
+def test_archive_member_names_with_brackets_are_not_patterns(tmp_path):
+    """`[` is legal in Windows file names: a member `Gam[e].cue` reaches tar literally, `Game.cue` is not matched."""
+    src = tmp_path / "src"
+    src.mkdir()
+    names = ["Gam[e].cue", "Game.cue"]
+    (src / "Gam[e].cue").write_bytes(b"bracket")
+    (src / "Game.cue").write_bytes(b"plain")
+    archive = tmp_path / "g.7z"
+    subprocess.run([TAR, "-cf", str(archive), "--format", "7zip", "-C", str(src), *names], check=True)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    disc_module._tar("-xf", str(archive), "-C", str(dest), disc_module._literal("Gam[e].cue"))
+    assert [p.name for p in dest.iterdir()] == ["Gam[e].cue"]
+    assert disc_module._archive_head(archive, "Gam[e].cue") == b"bracket"
 
 
 @needs_bsdtar
@@ -445,11 +454,13 @@ def test_real_disc(dc_path):
 
 
 def test_tar_program_prefers_bsdtar_when_on_path(monkeypatch):
+    monkeypatch.setattr(disc_module, "WINDOWS_TAR", Path("no-such-dir") / "tar.exe")      # the PATH rule is the test
     monkeypatch.setattr(disc_module.shutil, "which", lambda name: "/usr/bin/bsdtar" if name == "bsdtar" else None)
     assert disc_module._tar_program() == "bsdtar"
 
 
 def test_tar_program_falls_back_to_tar(monkeypatch):
+    monkeypatch.setattr(disc_module, "WINDOWS_TAR", Path("no-such-dir") / "tar.exe")
     monkeypatch.setattr(disc_module.shutil, "which", lambda name: None)
     assert disc_module._tar_program() == "tar"
 
@@ -470,9 +481,132 @@ def test_archive_bsdtar_failure_names_no_remedy(tmp_path, monkeypatch):
     the install-bsdtar remedy is only for plain `tar`."""
     archive = tmp_path / "Game.7z"
     archive.write_bytes(b"7z\xbc\xaf\x27\x1c" + bytes(64))
+    monkeypatch.setattr(disc_module, "WINDOWS_TAR", Path("no-such-dir") / "tar.exe")      # the PATH rule is the test
     monkeypatch.setattr(disc_module.shutil, "which", lambda name: "/usr/bin/bsdtar" if name == "bsdtar" else None)
     monkeypatch.setattr(disc_module, "_tar", lambda *a: subprocess.CompletedProcess(
         a, 1, "", "bsdtar: Truncated 7-Zip file data"))
     with pytest.raises(DiscError, match="Truncated 7-Zip file data") as err:
         DcDisc.open(archive, out=tmp_path / "out")
     assert "libarchive-tools" not in str(err.value)
+
+
+def _py7zr_archive(tmp_path, prefix=""):
+    """The disc archive written with py7zr (no bsdtar needed); the source files are under tmp_path / "src"."""
+    py7zr = pytest.importorskip("py7zr")
+    src = tmp_path / "src"
+    (src / prefix).mkdir(parents=True)
+    make_disc(src / prefix)
+    archive = tmp_path / "Game.7z"
+    with py7zr.SevenZipFile(archive, "w") as z:
+        for name in (f"{prefix}Game.cue", f"{prefix}{TRACK3}"):
+            z.write(src / name, name)
+    return archive
+
+
+def test_py7zr_when_tar_cannot_list(tmp_path, monkeypatch):
+    archive = _py7zr_archive(tmp_path)
+    monkeypatch.setattr(disc_module._TarArchive, "lists", staticmethod(lambda archive: False))
+    out = tmp_path / "out"
+    assert DcDisc.open(archive, out=out).product == PRODUCT
+    assert sorted(p.name for p in (out / "dc" / "Game").iterdir()) == sorted(["Game.cue", TRACK3])
+    _assert_extracted(tmp_path / "src", out / "dc" / "Game")
+
+
+@needs_bsdtar
+def test_py7zr_extracts_the_same_bytes(tmp_path):
+    archive = _py7zr_archive(tmp_path)
+    got = {}
+    for kind in (disc_module._TarArchive, disc_module._SevenZipArchive):
+        dest = tmp_path / kind.__name__
+        dest.mkdir()
+        reader = kind(archive)
+        assert sorted(reader.members()) == sorted(["Game.cue", TRACK3])
+        assert reader.sizes()[TRACK3] == (tmp_path / "src" / TRACK3).stat().st_size
+        for m in ("Game.cue", TRACK3):
+            reader.extract(m, dest)
+        got[kind] = {m: (dest / m).read_bytes() for m in ("Game.cue", TRACK3)}
+        assert reader.head(TRACK3, 64) == (tmp_path / "src" / TRACK3).read_bytes()[:64]
+    assert got[disc_module._TarArchive] == got[disc_module._SevenZipArchive]
+
+
+def test_py7zr_partial_not_reused(tmp_path, monkeypatch):
+    archive = _py7zr_archive(tmp_path)
+    monkeypatch.setattr(disc_module._TarArchive, "lists", staticmethod(lambda archive: False))
+    out = tmp_path / "out"
+    partial = out / "dc" / "Game.partial"
+    partial.mkdir(parents=True)
+    (partial / TRACK3).write_bytes(b"truncated")
+    (partial / "Game.cue").write_text("junk")
+    assert DcDisc.open(archive, out=out).product == PRODUCT
+    assert not partial.exists()
+    _assert_extracted(tmp_path / "src", out / "dc" / "Game")
+
+
+def test_windows_prefers_system32_tar(monkeypatch, tmp_path):
+    fake = tmp_path / "tar.exe"
+    fake.write_bytes(b"")
+    monkeypatch.setattr(disc_module, "WINDOWS_TAR", fake)
+    monkeypatch.setattr(disc_module.sys, "platform", "win32")
+    monkeypatch.setattr(disc_module.shutil, "which", lambda name: None if name == "bsdtar" else r"C:\Git\usr\bin\tar.exe")
+    assert disc_module._tar_program() == str(fake)
+    monkeypatch.setattr(disc_module, "WINDOWS_TAR", tmp_path / "absent.exe")
+    assert disc_module._tar_program() == "tar"
+
+
+def test_tar_remedy_names_windows():
+    assert "Windows" in disc_module._TAR_REMEDY and "py7zr" in disc_module._TAR_REMEDY
+
+
+def test_remedy_without_py7zr_does_not_say_pip_install(monkeypatch):
+    monkeypatch.setitem(sys.modules, "py7zr", None)
+    text = disc_module._remedy_text()
+    assert "pip install" not in text and "System32" in text and ".cue" in text
+
+
+def test_tar_lists_but_cannot_extract_falls_back(tmp_path, monkeypatch):
+    archive = _py7zr_archive(tmp_path)
+
+    def broken(self, member, dest):
+        raise DiscError("tar: cannot decode LZMA2")
+
+    monkeypatch.setattr(disc_module._TarArchive, "lists", staticmethod(lambda archive: True))
+    monkeypatch.setattr(disc_module._TarArchive, "extract", broken)
+    out = tmp_path / "out"
+    assert DcDisc.open(archive, out=out).product == PRODUCT
+    assert not (out / "dc" / "Game.partial").exists()
+    _assert_extracted(tmp_path / "src", out / "dc" / "Game")
+
+
+def test_tar_and_py7zr_both_failing_names_both(tmp_path, monkeypatch):
+    archive = _py7zr_archive(tmp_path)
+
+    def broken(self, member, dest):
+        raise DiscError("boom")
+
+    monkeypatch.setattr(disc_module._TarArchive, "lists", staticmethod(lambda archive: True))
+    monkeypatch.setattr(disc_module._TarArchive, "extract", broken)
+    monkeypatch.setattr(disc_module._SevenZipArchive, "extract", broken)
+    with pytest.raises(DiscError, match="boom.*py7zr: boom"):
+        DcDisc.open(archive, out=tmp_path / "out")
+
+
+def test_py7zr_list_errors_are_disc_errors(tmp_path, monkeypatch):
+    py7zr = pytest.importorskip("py7zr")
+    archive = _py7zr_archive(tmp_path)
+
+    def broken(self):
+        raise RuntimeError("bad header")
+
+    monkeypatch.setattr(py7zr.SevenZipFile, "list", broken)
+    with pytest.raises(DiscError, match="bad header"):
+        disc_module._SevenZipArchive(archive).members()
+
+
+def test_py7zr_member_in_a_folder(tmp_path, monkeypatch):
+    archive = _py7zr_archive(tmp_path, prefix="Game/")
+    monkeypatch.setattr(disc_module._TarArchive, "lists", staticmethod(lambda archive: False))
+    reader = disc_module._SevenZipArchive(archive)
+    assert reader.head(f"Game/{TRACK3}", 16) == (tmp_path / "src" / "Game" / TRACK3).read_bytes()[:16]
+    out = tmp_path / "out"
+    assert DcDisc.open(archive, out=out).product == PRODUCT
+    _assert_extracted(tmp_path / "src", out / "dc" / "Game", "Game/")

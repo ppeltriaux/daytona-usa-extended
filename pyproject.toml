@@ -1,9 +1,9 @@
 [project]
 name = "dtools"
-version = "0.1.0"
+version = "0.1.2"
 description = "Tools to bring the Dreamcast Daytona USA courses to the Model 2 arcade version"
 requires-python = ">=3.12"
-dependencies = ["numpy>=2"]
+dependencies = ["numpy>=2", 'py7zr>=1.1; python_version < "3.15"']
 
 [project.scripts]
 dtools = "dtools.cli:main"

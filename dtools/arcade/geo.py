@@ -401,7 +401,7 @@ def parse_log(path: Path) -> Iterator[tuple[int, int, int, list[int]]]:
     """(frame, read_start, videoctl, words) per `G` line of geo_log.lua. `read_start` is the byte offset the i960
     last wrote to 0x00803008 (walk the list with `walk(words, read_start // 4)`); `words` are the 0x8000 buffer
     RAM words."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.startswith("G "):
                 continue

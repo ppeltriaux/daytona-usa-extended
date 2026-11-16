@@ -42,4 +42,4 @@ def write_obj(path: Path, groups: dict[str, Iterable[Poly]], scale: float = 1.0,
             faces.append(f"# attr {poly.attr:x}")
             faces.append("f " + " ".join(str(i) for i in ids))
         lines.extend(faces)
-    Path(path).write_text("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")

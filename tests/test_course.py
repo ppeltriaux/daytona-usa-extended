@@ -2316,3 +2316,56 @@ def test_grow_rankings_keeps_courses(romset_zip, disc):  # noqa: F811
     b = C.grow_rankings(S.patch_select(before, S.M4B_ENTRIES))
     assert (a.program, a.data, a.copro_data, a.polygons, a.textures) == \
         (b.program, b.data, b.copro_data, b.polygons, b.textures)
+
+
+# ---- the pit stalls (v0.1.2) ----
+
+def test_pit_stalls_real(romset_zip):
+    """CAR_TABLES_230E50 is the pit stop's waypoints (the stop 0xe384 steers the car to them, 0xe744): per course id a
+    u32[8], one stall per car ident (car +0x4 & 7, a linked cabinet's), each PIT_WAYPOINTS records of x, z, speed f32
+    and a 0 word. Beginner's stall 0 (a single cabinet's): in at 150 along z -62, over to -59 at 60, the stop at
+    242.36 (speed 0), then the lane's end; the stalls about 21 units apart. Id 3 (the stub) repeats Advanced's. On a
+    grown set every id reads the grown table, ids 3-15 Beginner's stalls."""
+    from dtools.arcade import course as C
+    rs = RomSet.from_zip(romset_zip)
+    b = C.pit_stalls(rs, 0)
+    assert len(b) == C.PIT_STALLS == 8 and {len(s) for s in b} == {C.PIT_WAYPOINTS} == {7}
+    assert [(round(w.x, 2), round(w.z, 2), w.speed) for w in b[0]] == [
+        (92.36, -62.0, 150.0), (162.36, -62.0, 100.0), (182.36, -62.0, 60.0), (202.36, -59.0, 60.0),
+        (212.36, -59.0, 20.0), (242.36, -59.0, 0.0), (300.0, -59.0, 0.0)]
+    assert [round(s[0].x - b[k + 1][0].x, 1) for k, s in enumerate(b[:-1])] == [20.7, 20.7, 21.5, 19.9, 22.4, 19.2, 21.2]
+    assert C.pit_stalls(rs, 3) == C.pit_stalls(rs, 2) != b
+    assert C.pit_stalls(rs, 1)[0][0].x == pytest.approx(-480.61)
+    g = C.grow_ids(rs)
+    assert all(C.pit_stalls(g, k) == C.pit_stalls(rs, k) for k in range(3))
+    assert all(C.pit_stalls(g, k) == b for k in range(3, C.COURSE_IDS))
+
+
+def test_pit_stalls_round_trip():
+    """encode_pit_stalls at `addr`: the u32[8] stall pointers, then the stalls back to back (16 bytes a waypoint: x, z,
+    speed f32, 0); pit_stalls reads them back through the id's entry. Refused: a wrong count, a value not finite or
+    not single precision, an address not 4-aligned."""
+    from dtools.arcade import course as C
+    stalls = tuple(tuple(C.PitWaypoint(float(k), -float(j), 150.0 - 25 * j) for j in range(7)) for k in range(8))
+    addr = DATA + 0x10000
+    blob = C.encode_pit_stalls(stalls, addr)
+    assert len(blob) == C.PIT_STALLS_SIZE == 32 + 8 * 7 * 16
+    assert struct.unpack_from("<8I", blob) == tuple(addr + 32 + 112 * k for k in range(8))
+    assert struct.unpack_from("<3fI", blob, 32 + 112 + 16) == (1.0, -1.0, 125.0, 0)
+    program, data = bytearray(0x40000), bytearray(0x20000)
+    data[0x10000:0x10000 + len(blob)] = blob
+    table = C.ID_ARRAYS["CAR_TABLES_230E50"].old
+    struct.pack_into("<I", program, table - 0x00220000 + 0x20000 + 4 * 2, addr)
+    assert C.pit_stalls(_rs(program, data), 2) == stalls
+    with pytest.raises(C.CourseError, match="8 stalls"):
+        C.encode_pit_stalls(stalls[:7], addr)
+    with pytest.raises(C.CourseError, match="7 waypoints"):
+        C.encode_pit_stalls((stalls[0][:6],) + stalls[1:], addr)
+    bad = ((C.PitWaypoint(float("inf"), 0.0, 0.0),) + stalls[0][1:],) + stalls[1:]
+    with pytest.raises(C.CourseError, match="finite"):
+        C.encode_pit_stalls(bad, addr)
+    bad = ((C.PitWaypoint(0.1, 0.0, 0.0),) + stalls[0][1:],) + stalls[1:]
+    with pytest.raises(C.CourseError, match="single precision"):
+        C.encode_pit_stalls(bad, addr)
+    with pytest.raises(C.CourseError, match="aligned"):
+        C.encode_pit_stalls(stalls, addr + 2)

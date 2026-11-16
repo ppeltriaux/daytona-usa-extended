@@ -1,3 +1,8 @@
+import subprocess
+import sys
+
+import pytest
+
 from dtools import config
 
 
@@ -40,6 +45,7 @@ def _fake_build(root, patch_text="the patch\n", stamp=True, exe=True):
     return patch, binary
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_custom_mame_found_when_built_with_the_current_patch(monkeypatch, tmp_path):
     monkeypatch.delenv("DAYTONA_CUSTOM_MAME", raising=False)
     monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
@@ -49,6 +55,7 @@ def test_custom_mame_found_when_built_with_the_current_patch(monkeypatch, tmp_pa
     assert config.custom_mame() is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_custom_mame_none_without_stamp_or_binary(monkeypatch, tmp_path):
     monkeypatch.delenv("DAYTONA_CUSTOM_MAME", raising=False)
     monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
@@ -60,6 +67,7 @@ def test_custom_mame_none_without_stamp_or_binary(monkeypatch, tmp_path):
     assert config.custom_mame() is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_custom_mame_from_env(monkeypatch, tmp_path):
     exe = tmp_path / "mymame"
     monkeypatch.setenv("DAYTONA_CUSTOM_MAME", str(exe))
@@ -67,3 +75,11 @@ def test_custom_mame_from_env(monkeypatch, tmp_path):
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
     assert config.custom_mame() == exe
+
+
+@pytest.mark.skipif(not (config.REPO_ROOT / ".git").exists(), reason="the export has no .git")
+def test_line_endings_pinned():
+    out = subprocess.run(["git", "check-attr", "text", "eol", "--", "tools/mame-daytona-rom-space.patch",
+                          "dtools/release.py"], capture_output=True, text=True, cwd=config.REPO_ROOT, check=True).stdout
+    assert "tools/mame-daytona-rom-space.patch: text: unset" in out
+    assert "dtools/release.py: eol: lf" in out

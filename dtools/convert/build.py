@@ -97,6 +97,7 @@ from dtools.convert import ConvertError, ground, model, tables, textures
 from dtools.dc import pol, tex
 from dtools.dc.data import CourseData, decode_data, road_cells
 from dtools.dc.disc import COURSE_COUNT, DcDisc, course_files
+from dtools.dc import exe as dc_exe
 from dtools.dc.exe import EXE_NAME
 
 GRID_BASES = (100, 984, 480, 458, 418, 123, 493, 493)
@@ -402,12 +403,21 @@ def _meshes(m: pol.Model) -> dict[tuple[int, int], pol.Mesh]:
     return {(oi, mi): me for oi, ob in enumerate(m.objects) for mi, me in enumerate(ob.meshes)}
 
 
+DECAL_STEP = 17
+"""One ARGB4444 step (255 / 15): a decal's visible texels may stray this far from its modal colour, per channel."""
+DECAL_SHARE = 0.99
+"""... and its modal colour holds at least this share of them (v0.1.2: CS5's and CS7's shadow texture 67, 994 of 1000
+texels (17, 17, 17), six one step off; CS6's near-white texture 131, 77 % one colour, is no decal)."""
+
+
 def decals(m, tex_blob) -> tuple[int, ...]:
     """The Dreamcast textures whose meshes the scenery drops (Phase 7 ruling, docs/spike/2026-11-convert.md, "Scenery
     assembled"): the arcade's translucency is binary (index 15 transparent, everything else opaque), so an alpha-blended
     decal whose picture is in its alpha alone cannot be drawn and would show as a dark square. A texture is one when
     every mesh drawing it alpha-blends it (`_blends`), its alpha is not all opaque, and either its visible texels
-    (alpha above 0) are all one colour (a shadow: Desert City's 55, 56 and 74, (17, 17, 17) at 40-67 % alpha) or none
+    (alpha above 0) are all one colour (a shadow: Desert City's 55, 56 and 74, (17, 17, 17) at 40-67 % alpha), or
+    nearly (v0.1.2: the modal colour holds DECAL_SHARE of them and none is more than DECAL_STEP from it per channel:
+    Mermaid Lake's and Circuit Pixie's shadow 67, drawn solid black under gantries and bridges when kept), or none
     reaches 50 % alpha (textures.OPAQUE: Desert City's 81, wholly transparent once converted). Ascending. ConvertError for an `m` that is
     not a pol.Model or a blob that is not bytes; DcError from tex.decode_tex."""
     if not isinstance(m, pol.Model) or not isinstance(m.textures, tuple) or not isinstance(m.objects, tuple):
@@ -428,9 +438,19 @@ def decals(m, tex_blob) -> tuple[int, ...]:
         if (alpha == 255).all():
             continue                                            # opaque: drawn as it is, whatever the blending
         visible = rgba[..., :3][alpha > 0]
-        if not (alpha >= textures.OPAQUE).any() or len(np.unique(visible, axis=0)) <= 1:
+        if not (alpha >= textures.OPAQUE).any() or _one_colour(visible):
             out.append(i)
     return tuple(out)
+
+
+def _one_colour(visible: np.ndarray) -> bool:
+    """True when the visible texels (an (n, 3) array) are one colour, or nearly: DECAL_SHARE of them the modal
+    colour and every one within DECAL_STEP of it per channel (`decals`)."""
+    colours, counts = np.unique(visible, axis=0, return_counts=True)
+    if len(colours) <= 1:
+        return True
+    mode = colours[np.argmax(counts)].astype(int)
+    return counts.max() >= DECAL_SHARE * len(visible) and int(np.abs(visible.astype(int) - mode).max()) <= DECAL_STEP
 
 
 SKY_RADIUS = 400.0
@@ -707,13 +727,22 @@ the one object whose thinning earns its place on the frames still over the targe
 course's other objects lose 0-67 each: strips, as National Park Speedway's)."""
 
 
-QUAD: dict[int, tuple[float, float]] = {4: (10.0, 0.125), 6: (10.0, 0.125), 5: (10.0, 0.125)}
+QUAD: dict[int, tuple[float, float]] = {4: (10.0, 0.125), 6: (10.0, 0.125), 5: (10.0, 0.125), 7: (10.0, 0.125)}
 """Per course n, the quad tolerances `model.convert_model` merges its scenery's triangles with (degrees between the two
 normals; the fourth corner's shear off the affine prediction as a fraction of its texture's smaller side) in place of
 model.QUAD_ANGLE and model.QUAD_UV (Phase 10 Task 3, the controller's lever 2; fix round 1's ruling I1, set before
 measuring: a fold of at most 10 degrees, a shear of at most 1/8 of the texture; docs/spike/2026-11-courses-4-7.md,
-"National Park Speedway"; Rin Rin Rink and Circuit Pixie at the same bound, Phase 11 Tasks 3 and 4). A course not
+"National Park Speedway"; Rin Rin Rink and Circuit Pixie at the same bound, Phase 11 Tasks 3 and 4; Mermaid Lake too,
+v0.1.2, to keep CELL_CUT's cut in budget). A course not
 named keeps those."""
+CELL_CUT: dict[int, float] = {7: 32.0}
+"""Per course n, the world units a scenery polygon may reach past its own cell before `model.convert_model` cuts it on
+the cell grid (v0.1.2; docs/follow-ups/v0.1.2.md, "Mermaid Lake's start camera"): Mermaid Lake's start straight is a
+few strips about 232 units long filed one cell ahead of the grid, which the start's fly-by never opens, so the
+backdrop showed through. 32 (Pascal took the recommendation, 15 Nov 2026): 420 of CS7's polygons reach further (the
+start straight's long strips 82-146 units). The cut alone put the lap's maximum at 3,985 drawn at frame 1715 (64: 3,963),
+over the 3,951 target, so CS7 also takes QUAD's tolerances (as 4-6): 3,790 (tests/test_courses_mame.py LAKE_MAX). A
+course not named is not cut (its bytes unchanged)."""
 REMESH: dict[int, float] = {4: 0.1, 6: 0.1, 5: 0.1}
 """Per course n, the bound (world units) `model.remesh` re-meshes its kept model to before thinning (Phase 10 Task 3,
 lever 3: 0.1, set before measuring; Rin Rin Rink and Circuit Pixie the same, Phase 11 Tasks 3 and 4). A course not
@@ -1180,7 +1209,7 @@ def _clamped(uvs, modes) -> tuple:
 
 def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep: dict | None = None, *,
                   slot: int = 0, quad: tuple[float, float] | None = None, remesh: float | None = None,
-                  props=()) -> Scenery:
+                  props=(), cell_cut: float | None = None) -> Scenery:
     """A Dreamcast course model (`m`, a `CS{n}_POL.BIN`; `tex_blob` its `CS{n}_TEX.BIN`) as the Scenery of a converted
     course in slot `slot` of `rs` (0, Beginner's, on the original set; NEW_ID on a grown set: the colour tables, which
     pick the hues, are the original's on both). Phase 7 Task 5's rulings
@@ -1192,7 +1221,8 @@ def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep
       names thinned to their fractions, the road protected (`scenery_model`, Task 7; converted_set passes THIN's),
       after a re-mesh to `remesh` world units where given (`model.remesh`; converted_set passes REMESH's, Phase 10
       Task 3); the rest converted (`model.convert_model`: one object per cell, more past model.MAX_RECORDS; `quad`
-      its quad tolerances where given, converted_set passing QUAD's) and textured
+      its quad tolerances where given, converted_set passing QUAD's; `cell_cut` its cell-grid cut where given,
+      converted_set passing CELL_CUT's) and textured
       (`textures.course_textures`, every texture packed in sheet 0, the slot's course block); each record's distance
       coefficient fitted to its converted texture's size (`_fit_coefficients`);
     - one texture header per drawn record (each drawn record steps the header by 1, a move record by 0: a move reads
@@ -1234,7 +1264,8 @@ def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep
     base_kept, kept = _scenery_models(m, tex_blob, d, keep, remesh, props)
     where, meshes = model.triangle_meshes(kept), _meshes(kept)
     base, indices = textures.course_textures(m, tex_blob, rs)
-    pieces, _ = _fit_coefficients(model.convert_model(kept, quad, {t: (h.width, h.height) for t, h in base.items()}),
+    pieces, _ = _fit_coefficients(model.convert_model(kept, quad, {t: (h.width, h.height) for t, h in base.items()},
+                                                      cell_cut),
                                   [(t.width, t.height) for t in m.textures], base)
     tables_ = T.colour_tables(rs)
     face = mesh_colours(m, base_kept, kept)
@@ -2769,7 +2800,7 @@ def converted_set(rs: RomSet, disc: DcDisc, n: int, *, slot: int = 0, scenery: s
     `scenery="empty"`, + MODEL_FIELDS for `scenery="model"`: the set then has course.LIBRARY_BOUND_PATCH, applied
     for the model scenery only). With `scenery="model"` and no `scenery_data` the scenery is the course's own model:
     `model_scenery(rs, d, CS{n}_POL.BIN, CS{n}_TEX.BIN, THIN.get(n), quad=QUAD.get(n), remesh=REMESH.get(n),
-    props=NAMED_PROPS.get(n, ()))` from the disc; a course LIFT names is converted lifted (its data and model by
+    props=NAMED_PROPS.get(n, ()), cell_cut=CELL_CUT.get(n))` from the disc; a course LIFT names is converted lifted (its data and model by
     `lifted_data` and `lifted_model`, Phase 10 Task 4), a course SHIFT names shifted in x (`shifted_data` and
     `shifted_model`, Phase 11 Task 3; after the lift) (`rs` should be the original
     set, never an earlier conversion's output; for a new id the grown, guarded set, `model_scenery(..., slot=slot)`
@@ -2795,7 +2826,7 @@ def converted_set(rs: RomSet, disc: DcDisc, n: int, *, slot: int = 0, scenery: s
         if n in SHIFT:
             m = shifted_model(m, SHIFT[n])
         scenery_data = model_scenery(rs, d, m, disc.read(tn), THIN.get(n), slot=slot, quad=QUAD.get(n),
-                                     remesh=REMESH.get(n), props=NAMED_PROPS.get(n, ()))
+                                     remesh=REMESH.get(n), props=NAMED_PROPS.get(n, ()), cell_cut=CELL_CUT.get(n))
     c = converted_course(rs, d, exe, n, slot=slot, scenery=scenery, layout=layout, scenery_data=scenery_data)
     if scenery == "model":
         return encode(rs, c, RACE_FIELDS + MODEL_FIELDS + (ID_FIELDS if slot else ()))
@@ -2807,14 +2838,170 @@ LONG_TIME = 12000   # ticks: a start time past a 180 s run (the playtest set's a
 
 def long_time(s: RomSet, c: golden.Course, ticks: int = LONG_TIME) -> RomSet:
     """`s` with the first word (the start time) of every time table of `c` set to `ticks`, so a human can drive a
-    lap: a converted course keeps Beginner's start time (3200 ticks, 50 s to the first checkpoint). M6 sets the
-    real times."""
+    lap: a converted course keeps Beginner's start time (3200 ticks, 50 s to the first checkpoint). The release set's
+    real times are `race_times` (v0.1.2); this stays for the MAME tests' long-time runs."""
     s = _romset(s)
     if not isinstance(c, golden.Course):
         raise ConvertError(f"{type(c).__name__} is not a golden.Course")
     if not is_int(ticks) or not 0 < ticks < 1 << 32:
         raise ConvertError(f"start time {ticks!r} is not a positive u32")
     return s.with_patches({("data", t - DATA_BASE): struct.pack("<I", ticks) for _, t, _ in c.time_tables.values()})
+
+
+RACE_TIMES: dict[int, dict[tuple[int, int], tuple[int, tuple[int, ...]]]] = {
+    3: {
+        (0, 0): (7588, (856, 1188, 804)),
+        (0, 1): (6897, (778, 1080, 731)),
+        (0, 2): (6992, (789, 1095, 741)),
+        (0, 3): (7045, (795, 1103, 747)),
+        (1, 0): (31144, (610, 610, 610)),
+        (1, 1): (30924, (606, 606, 606)),
+        (1, 2): (32364, (634, 634, 634)),
+        (1, 3): (33564, (658, 658, 658)),
+        (2, 0): (31645, (1012, 1012, 1012)),
+        (2, 1): (30547, (977, 977, 977)),
+        (2, 2): (30619, (979, 979, 979)),
+        (2, 3): (30543, (977, 977, 977)),
+    },
+    4: {
+        (0, 0): (6436, (753, 929, 616)),
+        (0, 1): (5850, (684, 844, 560)),
+        (0, 2): (5930, (693, 856, 568)),
+        (0, 3): (5976, (699, 862, 572)),
+        (1, 0): (25870, (491, 491, 491)),
+        (1, 1): (25687, (488, 488, 488)),
+        (1, 2): (26883, (511, 511, 511)),
+        (1, 3): (27880, (530, 530, 530)),
+        (2, 0): (28227, (816, 816, 816)),
+        (2, 1): (27248, (788, 788, 788)),
+        (2, 2): (27312, (790, 790, 790)),
+        (2, 3): (27245, (788, 788, 788)),
+    },
+    5: {
+        (0, 0): (4634, (1178,)),
+        (0, 1): (4212, (1071,)),
+        (0, 2): (4270, (1086,)),
+        (0, 3): (4302, (1094,)),
+        (1, 0): (15424, (735,)),
+        (1, 1): (15315, (730,)),
+        (1, 2): (16028, (764,)),
+        (1, 3): (16622, (792,)),
+        (2, 0): (15855, (1271,)),
+        (2, 1): (15305, (1227,)),
+        (2, 2): (15341, (1230,)),
+        (2, 3): (15303, (1227,)),
+    },
+    6: {
+        (0, 0): (6416, (1050, 1087)),
+        (0, 1): (5832, (954, 988)),
+        (0, 2): (5912, (967, 1002)),
+        (0, 3): (5957, (974, 1009)),
+        (1, 0): (23973, (686, 686)),
+        (1, 1): (23803, (681, 681)),
+        (1, 2): (24911, (713, 713)),
+        (1, 3): (25835, (739, 739)),
+        (2, 0): (25020, (1140, 1140)),
+        (2, 1): (24152, (1100, 1100)),
+        (2, 2): (24209, (1103, 1103)),
+        (2, 3): (24149, (1100, 1100)),
+    },
+    7: {
+        (0, 0): (6430, (1105, 676, 606)),
+        (0, 1): (5844, (1004, 614, 551)),
+        (0, 2): (5924, (1018, 622, 559)),
+        (0, 3): (5969, (1026, 627, 563)),
+        (1, 0): (26337, (512, 512, 512)),
+        (1, 1): (26151, (508, 508, 508)),
+        (1, 2): (27369, (532, 532, 532)),
+        (1, 3): (28383, (551, 551, 551)),
+        (2, 0): (27351, (848, 848, 848)),
+        (2, 1): (26402, (819, 819, 819)),
+        (2, 2): (26464, (821, 821, 821)),
+        (2, 3): (26399, (819, 819, 819)),
+    },
+}
+"""The converted courses' own time tables (v0.1.2, docs/superpowers/specs/2026-11-15-race-times-design.md): id 3-7 ->
+(mode 0-2, difficulty 0-3) -> (start, one lap's pass words: the checkpoints in order, then the lap line); the table is
+the start then that lap repeated for every lap (the phantom last word included), `race_table`. Frozen from
+`racetimes.derive` on the AI field's measured sector times (tests/data/race_times_measured.json, spike/race_times.py,
+docs/spike/2026-11-race-times.md); tests/test_release.py test_race_times_frozen recomputes them. The start makes the
+whole race as generous as the arcade's own courses against their AI field (racetimes module docstring)."""
+
+
+def race_table(start: int, lap: tuple[int, ...], n_words: int) -> tuple[int, ...]:
+    """The time table of `n_words` words: `start`, then `lap` repeated (n_words - 1 must be a whole number of laps).
+    ConvertError otherwise."""
+    if not lap or (n_words - 1) % len(lap) or n_words < 1 + len(lap):
+        raise ConvertError(f"a table of {n_words} words is not a start plus whole laps of {len(lap)} passes")
+    return (start,) + tuple(lap) * ((n_words - 1) // len(lap))
+
+
+def race_times(s: RomSet, c: golden.Course, tables: dict[tuple[int, int], tuple[int, ...]] | None = None) -> RomSet:
+    """`s` with every time table of `c` rewritten in place with `tables` (default RACE_TIMES[c.course], each expanded
+    by `race_table` to the length of the course's table), word for word:
+    the same table addresses and lengths, no repointing. ConvertError for a RomSet or Course of the wrong kind, a
+    (mode, difficulty) of `c` that `tables` lacks or has extra, a table whose length differs from the course's (the race
+    reads 1 + laps x (checkpoints + 1) words), a word that is not a positive u32, or two tables that overlap without
+    being the same table with the same words (Sega's own tables overlap across difficulties: a course converted into an
+    original's slot without `slot=` keeps them, a new id's own tables are disjoint)."""
+    s = _romset(s)
+    if not isinstance(c, golden.Course):
+        raise ConvertError(f"{type(c).__name__} is not a golden.Course")
+    if tables is None:
+        if c.course not in RACE_TIMES:
+            raise ConvertError(f"course {c.course}: no race times (RACE_TIMES holds {sorted(RACE_TIMES)})")
+        tables = {key: race_table(*v, len(c.time_tables[key][2])) if key in c.time_tables else v
+                  for key, v in RACE_TIMES[c.course].items()}
+    if not isinstance(tables, dict) or set(tables) != set(c.time_tables):
+        got = sorted(tables) if isinstance(tables, dict) else tables
+        raise ConvertError(f"course {c.course}: race times for {got!r:.80}, the course has {sorted(c.time_tables)}")
+    patches: dict[tuple[str, int], bytes] = {}
+    for key, (_, t, words) in sorted(c.time_tables.items()):
+        new = tables[key]
+        if not isinstance(new, (tuple, list)) or len(new) != len(words):
+            got = len(new) if isinstance(new, (tuple, list)) else new
+            raise ConvertError(f"course {c.course} {key}: {got!r:.40} words, the table holds {len(words)}")
+        if not all(is_int(w) and 0 < w < 1 << 32 for w in new):
+            raise ConvertError(f"course {c.course} {key}: a word of {tuple(new)!r:.80} is not a positive u32")
+        blob = struct.pack(f"<{len(new)}I", *new)
+        at = ("data", t - DATA_BASE)
+        for (_, o), b in patches.items():
+            if (o, b) != (at[1], blob) and o < at[1] + len(blob) and at[1] < o + len(b):
+                raise ConvertError(f"course {c.course} {key}: the table at {t:#x} overlaps the one at "
+                                   f"{o + DATA_BASE:#x} with different words")
+        patches[at] = blob
+    return s.with_patches(patches)
+
+
+# ---- the pit stalls (v0.1.2) ----
+
+PIT_IDS = (3, 4, 5, 6, 7)
+"""The course ids pit_stalls writes: the converted courses (the originals keep the arcade's own stalls)."""
+
+
+def pit_stalls(s: RomSet, disc: DcDisc, n: int) -> RomSet:
+    """`s` (a grown set) with course id `n` (one of PIT_IDS, converted at its own id) given Dreamcast course n's pit
+    stalls (dc.exe.pit_stalls of the disc's 1ST_READ.BIN, the plain group; each x moved by SHIFT[n] as the course is,
+    single precision): course.encode_pit_stalls at the last free bytes of ID_DATA_FREE (`last_fit`, so the first fits
+    after it, the views', place as before), its CAR_TABLES_230E50 entry repointed there. Before v0.1.2 every new id
+    read Beginner's stalls (grow_ids' fill), which lie behind the car on the box of a converted course, so the stop
+    skipped all seven waypoints in 7 frames and the car drove on (docs/follow-ups/v0.1.2.md, "Pit stops").
+    ConvertError for `s` not a RomSet, `disc` not a DcDisc, an `n` outside PIT_IDS or a set whose CAR_TABLES_230E50
+    is not the grown table; DcError and CourseError from the readers and the encoder pass through."""
+    s = _romset(s)
+    if not isinstance(disc, DcDisc):
+        raise ConvertError(f"{type(disc).__name__} is not a DcDisc")
+    if not is_int(n) or n not in PIT_IDS:
+        raise ConvertError(f"course {n!r}: pit stalls are written for {PIT_IDS}")
+    table = C.id_table(s, "CAR_TABLES_230E50")
+    if table != C.ID_ARRAYS["CAR_TABLES_230E50"].new:
+        raise ConvertError(f"course {n}: CAR_TABLES_230E50 is read at {table:#x}, not the grown table (grow_ids)")
+    move = _offset(SHIFT.get(n, 0.0), "x", "shifted")
+    stalls = tuple(tuple(C.PitWaypoint(move(w.x), w.z, w.speed) for w in st)
+                   for st in dc_exe.pit_stalls(disc.read(EXE_NAME), n))
+    at = last_fit(s, "data", ID_DATA_FREE, C.PIT_STALLS_SIZE, f"course {n}'s pit stalls")
+    return s.with_patches({("data", at): C.encode_pit_stalls(stalls, DATA_BASE + at),
+                           ("data", table + 4 * n - DATA_BASE): struct.pack("<I", DATA_BASE + at)})
 
 
 # ---- the Dreamcast's own mirror as a check (Phase 9 Task 4) ----

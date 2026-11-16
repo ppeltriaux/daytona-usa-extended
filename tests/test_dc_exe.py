@@ -224,3 +224,73 @@ def test_checkpoints_variants_real(disc, exe_blob):
         assert exe.checkpoints(exe_blob, n, "R") == tuple(segs["R"] - s for s in reversed(plain))
         assert exe.checkpoints(exe_blob, n, "M") == plain
         assert exe.checkpoints(exe_blob, n, "MR") == exe.checkpoints(exe_blob, n, "R")
+
+
+# ---- the pit stalls (v0.1.2) ----
+
+def _pit_exe(groups, tail: bytes = b"\xAA" * 16) -> bytes:
+    """A stand-in 1ST_READ.BIN with `groups` (PIT_GROUPS x PIT_STALLS lists of PIT_WAYPOINTS (x, z, speed)) packed
+    in group order from 0x100, and their pointers at PIT_POINTERS."""
+    b = bytearray(b"\x55" * (exe.PIT_POINTERS + 4 * exe.PIT_GROUPS * exe.PIT_STALLS) + tail)
+    at = 0x100
+    for g, grp in enumerate(groups):
+        for k, stall in enumerate(grp):
+            struct.pack_into("<I", b, exe.PIT_POINTERS + 4 * (exe.PIT_STALLS * g + k), exe.EXE_BASE + at)
+            for x, z, v in stall:
+                struct.pack_into("<3f", b, at, x, z, v)
+                at += 12
+    return bytes(b)
+
+
+def _pit_groups():
+    return tuple(tuple(tuple((float(g * 100 + k), float(-j), float(150 - 20 * j)) for j in range(exe.PIT_WAYPOINTS))
+                       for k in range(exe.PIT_STALLS)) for g in range(exe.PIT_GROUPS))
+
+
+def test_pit_stalls_synthetic():
+    groups = _pit_groups()
+    b = _pit_exe(groups)
+    t = exe.decode_pit_stalls(b)
+    assert t == groups and all(isinstance(w, exe.PitWaypoint) for grp in t for st in grp for w in st)
+    # course n's plain stalls are pair PIT_PAIRS[n]'s first group, R its second
+    assert exe.PIT_PAIRS == (0, 2, 1, 3, 4, 5, 6, 7)
+    for n in range(8):
+        assert exe.pit_stalls(b, n) == groups[2 * exe.PIT_PAIRS[n]]
+        assert exe.pit_stalls(b, n, "R") == groups[2 * exe.PIT_PAIRS[n] + 1]
+    assert exe.pit_stalls(b, 1)[0][0] == (400.0, 0.0, 150.0)      # Expert: pair 2
+
+
+def test_pit_stalls_refuses_bad_tables():
+    groups = _pit_groups()
+    b = _pit_exe(groups)
+    with pytest.raises(DcError, match="pit pointer table"):
+        exe.decode_pit_stalls(b[:exe.PIT_POINTERS + 8])
+    for bad in (exe.EXE_BASE - 4, exe.EXE_BASE + 0x102, exe.EXE_BASE + exe.PIT_POINTERS - 8):
+        c = bytearray(b)
+        struct.pack_into("<I", c, exe.PIT_POINTERS + 4 * 9, bad)
+        with pytest.raises(DcError, match="pit group 1, stall 1"):
+            exe.decode_pit_stalls(bytes(c))
+    c = bytearray(b)
+    struct.pack_into("<f", c, 0x100 + 12 * 3 + 8, float("nan"))
+    with pytest.raises(DcError, match="not finite"):
+        exe.decode_pit_stalls(bytes(c))
+    with pytest.raises(DcError):
+        exe.pit_stalls(b, 8)
+    with pytest.raises(DcError):
+        exe.pit_stalls(b, 0, "M")
+
+
+def test_pit_stalls_match_the_arcade(exe_blob, romset_zip):
+    """The Dreamcast's pit stalls (PIT_POINTERS: 16 groups of 8 stalls of 7 waypoints) are the arcade's for courses
+    0-2 (course.pit_stalls on the stock set), value for value, in pair order Beginner, Advanced, Expert (PIT_PAIRS);
+    each R group is another list (its course run backwards)."""
+    from dtools.arcade import course as C
+    from dtools.arcade.romset import RomSet
+    rs = RomSet.from_zip(romset_zip)
+    for n in range(3):
+        arcade = tuple(tuple((w.x, w.z, w.speed) for w in st) for st in C.pit_stalls(rs, n))
+        assert exe.pit_stalls(exe_blob, n) == arcade, n
+        assert exe.pit_stalls(exe_blob, n, "R") != arcade
+    t = exe.decode_pit_stalls(exe_blob)
+    assert len(t) == 16 and {len(g) for g in t} == {8} and {len(s) for g in t for s in g} == {7}
+    assert exe.pit_stalls(exe_blob, 4)[0][0] == pytest.approx((-121.08, -46.41, 100.0), abs=0.005)

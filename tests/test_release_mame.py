@@ -268,11 +268,11 @@ _SHORT: dict = {}
 
 
 def _release_short(romset_zip, disc, title: bool = True) -> RomSet:  # noqa: F811
-    """release_set(..., long_ids=()) of the player's set and disc (the gates' set), with or without the title
+    """release_set(..., long_ids=(), times=False) of the player's set and disc (the gates' set), with or without the title
     (release_set's test-only `title`), built once per session."""
     key = (str(romset_zip), title)
     if key not in _SHORT:
-        _SHORT[key] = release_set(RomSet.from_zip(romset_zip), disc, long_ids=(), title=title)
+        _SHORT[key] = release_set(RomSet.from_zip(romset_zip), disc, long_ids=(), title=title, times=False)
     return _SHORT[key]
 
 
@@ -282,8 +282,10 @@ def _release_short(romset_zip, disc, title: bool = True) -> RomSet:  # noqa: F81
 def test_release_gates(tmp_path, romset_zip, disc, course):  # noqa: F811
     """Each converted course's Phase 11 gate (tests/test_courses_mame.py `_gate`, test_national_park_id4's checks:
     the long-time race and its frozen numbers, the time-over session, then Beginner) with every number unchanged, on
-    the release set without the start words (`release_set(rs, disc, long_ids=())`: `_gate` raises them itself for its
-    long-time run; test_release_long_ids_only_start_words proves that is the only difference from the release set),
+    the release set without its race times (`release_set(rs, disc, long_ids=(), times=False)`: the converted courses
+    keep Beginner's words, on which the time-over frames were measured; `_gate` raises the start itself for its
+    long-time run; tests/test_release.py test_release_race_times proves the time tables are the only difference from
+    the release set, and test_race_times_driven races the release set's own times),
     entry `course` of the release row; Circuit Pixie (5) and Rin Rin Rink (6) also read their own views on every frame
     of the lap (`outside_view`). Snapshots to out/phase12/snaps/task4/gates/.
 
@@ -307,3 +309,148 @@ def test_release_gates(tmp_path, romset_zip, disc, course):  # noqa: F811
     if course in (5, 6):
         outside = outside_view(seen, build.VIEW[course])
         assert not outside, outside[:8]
+
+
+RACE_TIMES_MARGIN = {3: 4257, 4: 3977, 5: 1452, 6: 3708, 7: 4157}
+"""Ticks left on the clock when the autopilot's player car crosses the lap line at the end of lap 1 (before the lap
+line's word is added), per converted course, on the release set (test_race_times_driven, measured 15 Nov 2026; GO at
+frame 1651 on all five). The autopilot laps about 25 % slower than the AI field's median (Desert City's lap 1: 4,497
+frames against the field's 3,569), so it is no reference for a whole race: docs/spike/2026-11-race-times.md."""
+
+
+@pytest.mark.mame
+@pytest.mark.custom_mame
+@pytest.mark.parametrize("course", (3, 4, 5, 6, 7))
+def test_race_times_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
+    """v0.1.2 (docs/superpowers/specs/2026-11-15-race-times-design.md, 7.5): on the release set, mode 0 difficulty 1,
+    the autopilot drives entry `course` (the player car on the course's road line, dtools.mame.road.road_file) past the
+    lap line of lap 1 with time left: the clock reads word 0 of build.RACE_TIMES at GO and counts down one tick a frame;
+    at every checkpoint the player reaches on lap 1, then the lap line, it rises RISE_AFTER frames later by that pass's
+    word (less the frame's tick); it never reaches 0 before the lap line. The ticks left at the lap line are printed and
+    must equal RACE_TIMES_MARGIN[course] once recorded."""
+    import math
+    from dtools.arcade import golden as G
+    from dtools.convert import build
+    from dtools.mame import build as mame_build, runner
+    from dtools.mame.road import road_file
+    from tests.test_convert_mame import RISE_AFTER
+    from tests.test_custom_mame import _custom
+    exe = _custom()
+    rel = _release(romset_zip, disc)
+    assert S.ENTRIES[course].course == course
+    c = G.decode_course(rel, course)
+    words = c.time_tables[(C.DEFAULT_MODE, C.DEFAULT_DIFFICULTY)][2]
+    assert words == build.race_table(*build.RACE_TIMES[course][(C.DEFAULT_MODE, C.DEFAULT_DIFFICULTY)], len(words))
+    passes = len(c.checkpoints)                         # the checkpoints, then the lap line
+    seconds = math.ceil(50 + sum(words[:passes + 1]) / 57.524)
+    road = road_file(c, tmp_path / "road.txt")
+    env = {"DAYTONA_ROW": "8", "DAYTONA_ENTRY": str(course), "DAYTONA_AUTOPILOT": str(road),
+           "DAYTONA_AUTOPILOT_LAPS": "99", "DAYTONA_SNAPS": "0"}
+    out = mame_build.run_set(rel, tmp_path, seconds, romset_zip, env, logs=("progress",), mame=exe)
+    rows, timer = runner.parse_progress(out["progress"])
+    go = next(f for f in sorted(timer) if f - 1 in timer and timer[f] < timer[f - 1])
+    assert timer[go - 1] == words[0] and timer[go] == words[0] - 1, (timer[go - 1], timer[go])
+    player = [r for r in rows if r.car == 0 and r.frame >= go]
+    reached = []
+    for cp in c.checkpoints:                            # lap 1's checkpoints, then the lap line (lap 1 -> 2)
+        f = next((r.frame for r in player if r.segment == cp.segment and r.lap == (cp.segment == 0)), None)
+        assert f is not None, (course, cp.segment, "the player never reached it")
+        reached.append((f, cp))
+    end = reached[-1][0] + RISE_AFTER
+    assert all(timer[f] > 0 for f in range(go, end + 1)), (course, "time over before the lap line")
+    rises = [f for f in range(go, end + 1) if timer[f] > timer[f - 1]]
+    assert all(timer[f] == timer[f - 1] - 1 for f in range(go, end + 1) if f not in rises)
+    assert len(rises) == len(reached), (rises, reached)
+    for j, (f, (r, cp)) in enumerate(zip(rises, reached)):
+        assert f - r == RISE_AFTER, (f, r, cp.segment)
+        assert timer[f] - timer[f - 1] == words[1 + j] - 1, (course, j, timer[f] - timer[f - 1], words[1 + j])
+    margin = timer[end - 1]
+    print(f"\ncourse {course}: GO {go}, passes at {[f for f, _ in reached]}, ticks left at the lap line {margin} "
+          f"({margin / 64:.1f} s on the HUD)")
+    if course in RACE_TIMES_MARGIN:
+        assert margin == RACE_TIMES_MARGIN[course], margin
+
+
+# ---- the pit stops (v0.1.2) ----
+
+PIT_SECONDS = 170
+"""Emulated seconds per pit run: GO (frame 1651), the autopilot's first lap to the box (Desert City's lap 1 alone is
+4,497 frames), then the stop (1,249-1,351 frames) and the 600 frames of driving after it the test reads (140 s ended
+inside Desert City's stop)."""
+STALL_REACH = 2.0
+"""World units: how far the stopped car may stand from its stall's last waypoint with a speed (stall 0's: the
+waypoint before the speed-0 one, which the car aims at while it brakes and never reaches)."""
+
+
+def _pit_rows(path: Path) -> list[dict]:
+    """pit_log.lua's P lines as dicts (frame, handler, seg, flags, timer, pit, x, z)."""
+    out = []
+    for line in Path(path).read_text().splitlines():
+        w = line.split()
+        if w and w[0] == "P":
+            out.append({"frame": int(w[1]), "handler": int(w[2], 16), "seg": int(w[3]), "flags": int(w[4], 16),
+                        "x": float(w[15]), "z": float(w[17]), "timer": int(w[18]), "pit": int(w[19])})
+    return out
+
+
+@pytest.mark.mame
+@pytest.mark.custom_mame
+@pytest.mark.parametrize("course", (0, 3, 4, 5, 6, 7))
+def test_pit_stop_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
+    """v0.1.2: on the release set the autopilot drives entry `course` into the pit lane (dtools.mame.road.pit_road_file:
+    the pit polygons' centres on the lane's segments) and the pit probe (pit_log.lua) logs the player car every frame.
+    The first stop: the trigger 0xdf9c starts it on the box polygon (handler 0xe288, the step's STEP_PIT_BOX flag, on
+    the pit's box segment); the stop 0xe384 then runs without a break until it ends with the stop counted out: the pit
+    word 0x501a8c set to 640, held while the car drives to its stall, counted down one a frame to 1 (0xe598), the
+    race timer held the whole time (it rises only by a time word when the car crosses the lap line or a checkpoint in
+    the stop: the lap line lies in the pit lane on National Park Speedway, Circuit Pixie and Mermaid Lake), the car
+    standing within STALL_REACH of stall 0's last waypoint with a speed
+    (course.pit_stalls: a single cabinet is car ident 0); after it the car drives on (back to 0xdc64, at least 10
+    segments in 600 frames). Beginner (entry 0) is the control: the arcade's own stalls. Before v0.1.2 every converted
+    course read Beginner's stalls and the stop ended 7 frames after the box (spike/pit_drive.py; National Park Speedway:
+    0xe384 at 5000-5006, the pit word never counted)."""
+    from dtools.arcade import golden as G, tgp
+    from dtools.mame import build as mame_build
+    from dtools.mame.road import pit_road_file
+    from tests.test_custom_mame import _custom
+    exe = _custom()
+    rel = _release(romset_zip, disc)
+    c = G.decode_course(rel, course)
+    g = c.ground_data or tgp.decode_ground(rel, course)
+    stall = C.pit_stalls(rel, course)[0]
+    last = max(j for j, w in enumerate(stall) if w.speed > 0)
+    road = pit_road_file(c, g, tmp_path / "pit_road.txt")
+    env = {"DAYTONA_ROW": "8", "DAYTONA_ENTRY": str(course), "DAYTONA_AUTOPILOT": str(road),
+           "DAYTONA_AUTOPILOT_LAPS": "99", "DAYTONA_SNAPS": "0"}
+    out = mame_build.run_set(rel, tmp_path, PIT_SECONDS, romset_zip, env, logs=("pit",), mame=exe)
+    rows = _pit_rows(out["pit"])
+    at = {r["frame"]: r for r in rows}
+    start = next((r for r in rows if r["handler"] == 0xE288), None)
+    assert start is not None, (course, "no pit stop started")
+    assert start["flags"] & C.STEP_PIT_BOX and start["seg"] == c.pit.box_segment, (course, start)
+    f0 = start["frame"]
+    stop = []
+    f = f0 + 1
+    while at[f]["handler"] == 0xE384:
+        stop.append(at[f])
+        f += 1
+    after = [r for r in rows if r["frame"] >= f]
+    assert stop and stop[0]["pit"] == 640, (course, f0, stop[:2])
+    counting = [r for r in stop if r["pit"] < 640]
+    assert [r["pit"] for r in counting] == list(range(639, 639 - len(counting), -1)), (course, len(stop))
+    assert counting and counting[-1]["pit"] in (1, 0), (course, len(stop), counting[-1:] if counting else None)
+    assert after[0]["handler"] == 0xDC64 and after[0]["pit"] == 1, (course, after[0])
+    words = set(c.time_tables[(C.DEFAULT_MODE, C.DEFAULT_DIFFICULTY)][2])
+    steps = [b["timer"] - a["timer"] for a, b in zip(stop, stop[1:])]
+    assert all(d == 0 or d in words for d in steps), (course, "the race timer ran during the stop",
+                                                      sorted(set(steps)))
+    still = {(round(r["x"], 3), round(r["z"], 3)) for r in counting}
+    assert len(still) == 1, (course, "the car moved while the stop counted", sorted(still)[:4])
+    x, z = still.pop()
+    gap = float(np.hypot(x - stall[last].x, z - stall[last].z))
+    assert gap <= STALL_REACH, (course, (x, z), stall[last], gap)
+    later = [r for r in after if r["frame"] <= f + 600]
+    moved = (later[-1]["seg"] - after[0]["seg"]) % len(c.road)
+    assert all(r["handler"] == 0xDC64 for r in later) and moved >= 10, (course, moved)
+    print(f"\ncourse {course}: box at frame {f0}, the stop {len(stop)} frames ({len(counting)} standing at "
+          f"({x:.3f}, {z:.3f}), {gap:.2f} from stall 0's waypoint {last}), timer held at {stop[0]['timer']}")

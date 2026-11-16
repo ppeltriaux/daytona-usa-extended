@@ -55,4 +55,4 @@ def custom_mame() -> Path | None:
     patch, stamp = REPO_ROOT / CUSTOM_MAME_PATCH, REPO_ROOT / CUSTOM_MAME_STAMP
     if not (exe.is_file() and os.access(exe, os.X_OK) and patch.is_file() and stamp.is_file()):
         return None
-    return exe if stamp.read_text().strip() == hashlib.sha256(patch.read_bytes()).hexdigest() else None
+    return exe if stamp.read_text(encoding="utf-8").strip() == hashlib.sha256(patch.read_bytes()).hexdigest() else None

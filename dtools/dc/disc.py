@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -134,42 +136,54 @@ def _literal(member: str) -> str:
     return re.sub(r"([\\*?\[])", r"\\\1", member)
 
 
-_TAR_REMEDY = ("only libarchive's bsdtar reads .7z archives: install it (Debian/Ubuntu: libarchive-tools; macOS has "
-               "it as tar) or pass the disc's .cue instead")
+WINDOWS_TAR = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tar.exe"
+"""Windows 10+ ships libarchive's bsdtar here; it reads .7z, unlike the GNU tar that Git for Windows puts on PATH."""
+
+_TAR_REMEDY_BASE = ("a tar that reads .7z was not found (libarchive's bsdtar: Windows 10+ has it as "
+                    r"C:\Windows\System32\tar.exe, macOS as tar, Debian/Ubuntu in libarchive-tools)")
+_TAR_REMEDY = (_TAR_REMEDY_BASE + " and the pure-Python py7zr fallback could not read the archive either "
+               "(pip install py7zr); or pass the disc's .cue instead")
+_TAR_REMEDY_NO_PY7ZR = (_TAR_REMEDY_BASE + " and py7zr is not installed: extract the .7z with 7-Zip or bsdtar "
+                        "and pass the disc's .cue instead")
+_TAR_REMEDY_PY315 = (_TAR_REMEDY_BASE + " and py7zr is not available on Python 3.15 (no wheels yet): extract the .7z "
+                     "with 7-Zip or bsdtar and pass the disc's .cue instead")
+
+
+def _remedy_text() -> str:
+    """_TAR_REMEDY when py7zr imports (pip install py7zr only helps where it does not), else the text without it."""
+    try:
+        import py7zr                                        # noqa: F401
+    except Exception:
+        return _TAR_REMEDY_PY315 if sys.version_info >= (3, 15) else _TAR_REMEDY_NO_PY7ZR
+    return _TAR_REMEDY
 
 
 def _tar_program() -> str:
-    """`bsdtar` when it is on PATH (GNU tar, Linux's `tar`, cannot read .7z), else `tar` (bsdtar on macOS)."""
+    """Windows' System32 tar.exe (bsdtar) when on Windows and present, else `bsdtar` when it is on PATH (GNU tar,
+    Linux's `tar`, cannot read .7z), else `tar` (bsdtar on macOS)."""
+    if sys.platform == "win32" and WINDOWS_TAR.is_file():
+        return str(WINDOWS_TAR)
     return "bsdtar" if shutil.which("bsdtar") else "tar"
 
 
 def _remedy(program: str) -> str:
-    """"; " + _TAR_REMEDY when `program` is plain `tar` (maybe GNU tar, which cannot read .7z), else nothing (bsdtar
+    """"; " + _TAR_REMEDY when `program` is plain `tar` (maybe GNU tar, which cannot read .7z) or Windows' tar.exe (its libarchive may lack the .7z
+    method), else nothing (bsdtar
     reads .7z: its own message says what is wrong)."""
-    return f"; {_TAR_REMEDY}" if program == "tar" else ""
+    return f"; {_remedy_text()}" if program in ("tar", str(WINDOWS_TAR)) else ""
 
 
 def _tar(*args: str) -> subprocess.CompletedProcess:
     program = _tar_program()
     try:
-        return subprocess.run([program, *args], capture_output=True, text=True)
+        return subprocess.run([program, *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     except OSError as exc:
         raise DiscError(f"cannot run {program}: {exc}{_remedy(program)}") from exc
 
 
 def _archive_head(archive: Path, member: str) -> bytes:
     """The first raw sector of `member`, streamed from the archive (nothing is written to disk)."""
-    program = _tar_program()
-    try:
-        proc = subprocess.Popen([program, "-xOf", str(archive), _literal(member)],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except OSError as exc:
-        raise DiscError(f"cannot run {program}: {exc}{_remedy(program)}") from exc
-    try:
-        return proc.stdout.read(RAW_SECTOR)
-    finally:
-        proc.kill()
-        proc.communicate()
+    return _TarArchive(archive).head(member, RAW_SECTOR)
 
 
 def _member_sizes(listing: str) -> dict[str, int]:
@@ -180,6 +194,134 @@ def _member_sizes(listing: str) -> dict[str, int]:
         if len(parts) == 9 and parts[4].isdigit():
             sizes[parts[8]] = int(parts[4])
     return sizes
+
+
+class _ReaderFailed(DiscError):
+    """A reader (tar or py7zr) failed to list, extract or read; not a judgement on the disc itself."""
+
+
+class _Archive:
+    """A Redump .7z read one way or another: member names, sizes, extraction of one member, a member's first bytes."""
+
+    def __init__(self, archive: Path):
+        self.archive = archive
+
+    def sizes(self) -> dict[str, int]:
+        raise NotImplementedError
+
+    def members(self) -> list[str]:
+        raise NotImplementedError
+
+    def extract(self, member: str, dest: Path) -> None:
+        raise NotImplementedError
+
+    def head(self, member: str, n: int) -> bytes:
+        raise NotImplementedError
+
+
+class _TarArchive(_Archive):
+    """The archive read by a tar program that reads .7z (bsdtar)."""
+
+    @staticmethod
+    def lists(archive: Path) -> bool:
+        """True when the tar program lists `archive` (`-tvf` exits 0); False when it fails or cannot be run."""
+        try:
+            return _tar("-tvf", str(archive)).returncode == 0
+        except DiscError:
+            return False
+
+    def sizes(self) -> dict[str, int]:
+        listing = _tar("-tvf", str(self.archive))
+        if listing.returncode != 0:
+            raise DiscError(f"{self.archive}: cannot list archive: {listing.stderr.strip()}"
+                            f"{_remedy(_tar_program())}")
+        return _member_sizes(listing.stdout)
+
+    def members(self) -> list[str]:
+        return [m for m in _tar("-tf", str(self.archive)).stdout.splitlines() if m and not m.endswith("/")]
+
+    def extract(self, member: str, dest: Path) -> None:
+        done = _tar("-xf", str(self.archive), "-C", str(dest), _literal(member))
+        if done.returncode != 0:
+            raise DiscError(f"{self.archive}: extraction of {member} failed: {done.stderr.strip()}")
+
+    def head(self, member: str, n: int) -> bytes:
+        program = _tar_program()
+        try:
+            proc = subprocess.Popen([program, "-xOf", str(self.archive), _literal(member)],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            raise DiscError(f"cannot run {program}: {exc}{_remedy(program)}") from exc
+        try:
+            data = proc.stdout.read(n)
+        finally:
+            proc.kill()
+            proc.communicate()
+        if not data:
+            raise DiscError(f"{self.archive}: {program} read nothing from {member}")
+        return data
+
+
+class _SevenZipArchive(_Archive):
+    """The archive read by py7zr (pure Python: slower, but needs no tar program). py7zr archives are read once, so
+    each operation opens the archive afresh."""
+
+    def _open(self):
+        try:
+            import py7zr                                    # here, so a broken install fails only on this path
+            return py7zr.SevenZipFile(self.archive, "r")
+        except Exception as exc:
+            raise DiscError(f"{self.archive}: py7zr cannot open the archive: {exc}") from exc
+
+    def _files(self):
+        with self._open() as z:
+            try:
+                return [(e.filename, e.uncompressed) for e in z.list() if not e.is_directory]
+            except Exception as exc:
+                raise DiscError(f"{self.archive}: py7zr cannot list the archive: {exc}") from exc
+
+    def sizes(self) -> dict[str, int]:
+        return {name.replace("\\", "/"): size for name, size in self._files()}
+
+    def members(self) -> list[str]:
+        return [name.replace("\\", "/") for name, _ in self._files()]
+
+    def extract(self, member: str, dest: Path) -> None:
+        try:
+            with self._open() as z:
+                z.extract(path=dest, targets=[member])
+        except DiscError:
+            raise
+        except Exception as exc:
+            raise DiscError(f"{self.archive}: py7zr extraction of {member} failed: {exc}") from exc
+
+    def head(self, member: str, n: int) -> bytes:
+        """The first `n` bytes of `member`, extracted to a temporary directory (removed after); only track 1, a few
+        MB, is read this way."""
+        with tempfile.TemporaryDirectory(prefix="dtools-7z-") as tmp:
+            self.extract(member, Path(tmp))
+            try:
+                with open(Path(tmp) / member, "rb") as f:
+                    return f.read(n)
+            except OSError as exc:
+                raise DiscError(f"{self.archive}: cannot read {member} after extraction: {exc}") from exc
+
+
+def _reader(archive: Path) -> _Archive:
+    """`_TarArchive` when the tar program lists `archive`, else `_SevenZipArchive`; DiscError naming both failures
+    when py7zr cannot open it either."""
+    if _TarArchive.lists(archive):
+        return _TarArchive(archive)
+    seven = _SevenZipArchive(archive)
+    try:
+        seven.members()
+    except DiscError as exc:
+        try:
+            why = _tar("-tvf", str(archive)).stderr.strip()
+        except DiscError as tar_exc:
+            why = str(tar_exc)
+        raise DiscError(f"{archive}: cannot list archive: {why}; {exc}{_remedy(_tar_program())}") from exc
+    return seven
 
 
 def _find_extracted(dest: Path, sizes: dict[str, int]) -> Path | None:
@@ -215,14 +357,12 @@ def _extract_7z(archive: Path, dest: Path) -> Path:
     extraction, its two files replace the stale ones in dest (nothing else in dest is touched). An interrupted
     extraction is never reused: the reuse check compares the track's size with the archive's.
     """
-    listing = _tar("-tvf", str(archive))
-    if listing.returncode != 0:
-        raise DiscError(f"{archive}: cannot list archive: {listing.stderr.strip()}{_remedy(_tar_program())}")
-    sizes = _member_sizes(listing.stdout)
+    reader = _reader(archive)
+    sizes = reader.sizes()
     found = _find_extracted(dest, sizes)
     if found is not None:
         return found
-    members = [m for m in _tar("-tf", str(archive)).stdout.splitlines() if m and not m.endswith("/")]
+    members = reader.members()
     cues = [m for m in members if m.lower().endswith(".cue")]
     if not cues:
         raise DiscError(f"{archive}: archive has no .cue (members: {members[:5]})")
@@ -236,17 +376,35 @@ def _extract_7z(archive: Path, dest: Path) -> Path:
         return m
 
     partial = dest.with_name(dest.name + ".partial")
-    if partial.exists():
-        shutil.rmtree(partial)
-    partial.mkdir(parents=True)
+
+    def attempt(rd: _Archive) -> str:
+        """Extract the cue and track 3 through `rd` into a fresh `partial`; return track 3's member name. A failure of
+        `rd` itself (not the disc check) is raised as _ReaderFailed."""
+        if partial.exists():
+            shutil.rmtree(partial)
+        partial.mkdir(parents=True)
+
+        def run(fn, *args):
+            try:
+                return fn(*args)
+            except DiscError as exc:
+                raise _ReaderFailed(str(exc)) from exc
+
+        run(rd.extract, cue_member, partial)
+        t3 = member(_check_track3(partial / cue_member, lambda name: run(rd.head, member(name), RAW_SECTOR)))
+        run(rd.extract, t3, partial)
+        return t3
+
     try:
-        done = _tar("-xf", str(archive), "-C", str(partial), _literal(cue_member))
-        if done.returncode != 0:
-            raise DiscError(f"{archive}: extraction of the cue failed: {done.stderr.strip()}")
-        track3 = member(_check_track3(partial / cue_member, lambda name: _archive_head(archive, member(name))))
-        done = _tar("-xf", str(archive), "-C", str(partial), _literal(track3))
-        if done.returncode != 0:
-            raise DiscError(f"{archive}: extraction failed: {done.stderr.strip()}")
+        try:
+            track3 = attempt(reader)
+        except _ReaderFailed as first:
+            if not isinstance(reader, _TarArchive):
+                raise DiscError(str(first)) from first
+            try:                                    # the tar lists the archive but cannot extract it: start over
+                track3 = attempt(_SevenZipArchive(archive))
+            except _ReaderFailed as second:
+                raise DiscError(f"{archive}: cannot extract: {first}; py7zr: {second}{_remedy(_tar_program())}") from second
         if dest.exists():
             for m in (cue_member, track3):
                 target = dest / m

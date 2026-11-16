@@ -1,6 +1,7 @@
 import collections
 import math
 import re
+import sys
 
 import pytest
 
@@ -58,18 +59,21 @@ def _fake_mame(tmp_path, body: str) -> str:
     return str(mame)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
 def test_lua_error_in_a_callback_fails_the_run(tmp_path, no_other_mame):
     mame = _fake_mame(tmp_path, "echo '[LUA ERROR] boom'\necho 'Average speed: 100%'\nexit 0\n")
     with pytest.raises(MameError, match=r"\[LUA ERROR\] boom"):
         run_mame(tmp_path / "x.lua", 1, tmp_path / "run", tmp_path, mame=mame)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
 def test_lua_error_on_stderr_fails_the_run(tmp_path, no_other_mame):
     mame = _fake_mame(tmp_path, "echo '[LUA ERROR] on stderr' >&2\necho 'Average speed: 100%'\nexit 0\n")
     with pytest.raises(MameError, match="on stderr"):
         run_mame(tmp_path / "x.lua", 1, tmp_path / "run", tmp_path, mame=mame)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
 def test_clean_fake_run_passes(tmp_path, no_other_mame):
     mame = _fake_mame(tmp_path, "echo 'Average speed: 100%'\nexit 0\n")
     assert "Average speed" in run_mame(tmp_path / "x.lua", 1, tmp_path / "run", tmp_path, mame=mame).stdout
@@ -104,6 +108,7 @@ def test_wait_gives_up_naming_the_other_mame(monkeypatch):
     assert clock.t == 12 and clock.sleeps == [5, 5, 2]          # bounded: polls up to the timeout, not past it
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
 def test_run_mame_waits_before_it_starts(tmp_path, monkeypatch):
     marker = tmp_path / "started"
     states = iter([["1 mame"], []])
@@ -119,6 +124,7 @@ def test_run_mame_waits_before_it_starts(tmp_path, monkeypatch):
     assert marker.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
 def test_running_mame_reads_pgrep_and_ps(tmp_path, monkeypatch):
     """running_mame asks `pgrep -x mame` for the pids and `ps` for their command lines; none: []."""
     bin_ = tmp_path / "bin"
@@ -133,6 +139,7 @@ def test_running_mame_reads_pgrep_and_ps(tmp_path, monkeypatch):
     assert runner.running_mame() == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
 def test_running_mame_sees_the_custom_build(tmp_path, monkeypatch):
     """The custom build's binary is named `model2` (tools/build-mame.sh, SUBTARGET=model2): running_mame asks pgrep for
     it too, so a custom run waits for a stock one and the other way round."""

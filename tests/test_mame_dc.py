@@ -2,6 +2,7 @@
 
 import hashlib
 import subprocess
+import sys
 import zipfile
 import zlib
 from pathlib import Path
@@ -194,6 +195,7 @@ def test_disc_image_extracts_the_small_tracks_from_the_archive(tmp_path, monkeyp
     assert calls == []                                              # extracted once
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_run_dc_runs_the_dc_system_with_the_image(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "running_mame", lambda: [])
     monkeypatch.chdir(tmp_path)
@@ -211,6 +213,7 @@ def test_run_dc_runs_the_dc_system_with_the_image(tmp_path, monkeypatch):
     assert argv[argv.index("-str") + 1] == "3"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_run_dc_fails_on_a_lua_error(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "running_mame", lambda: [])
     mame = tmp_path / "fake-mame"
