@@ -134,8 +134,8 @@ def disc_image(disc: dcdisc.DcDisc, out_dir: Path) -> Path:
 
 def run_dc(script: Path, seconds: int, workdir: Path, rom_dir: Path, image: Path, env: dict[str, str],
            *, mame: str = "mame", wait: float = runner.MAME_WAIT) -> subprocess.CompletedProcess:
-    """`runner.run_mame` on the `dc` system with `-cdrom image`: the same wait for another MAME, the same MameError
-    on a non-zero exit, a missing "Average speed" or a `[LUA ERROR]`. Snapshots land in `workdir/snap/dc/`. The run
+    """`runner.run_mame` on the `dc` system with `-cdrom image`: the same own comm port and job limit, the same
+    MameError on a non-zero exit, a missing "Average speed" or a `[LUA ERROR]`. Snapshots land in `workdir/snap/dc/`. The run
     starts with fresh NVRAM in `workdir` unless one is left there: the BIOS then asks for the date first. The
     script, workdir, ROM directory and image are made absolute (MAME runs in `workdir`)."""
     return runner.run_mame(Path(script).resolve(), seconds, Path(workdir).resolve(), Path(rom_dir).resolve(),

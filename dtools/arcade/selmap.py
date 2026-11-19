@@ -565,6 +565,150 @@ def map_paint(rs: RomSet, course: int) -> tuple[tuple[tuple[int, int, int], ...]
                       f"cells")
 
 
+# The faceted map (v0.2, Pascal's pick C1 of spike/selmap_facets.py; Virtua Racing's select pictures,
+# vrtools/convert/preview.py): over the painting's colour families, a jittered triangle mesh, each facet one flat
+# colour: its family the painting's majority under it, its shade (of the family's three) from a relief field and the
+# facet's light, so the ground reads mottled as Sega's map textures do rather than in flat fields. Plain float
+# arithmetic only (no LAPACK or BLAS: the build stays the same on every platform), numpy's PCG64 for the seeds.
+
+FACET_CELL = 9.0
+"""The spike's mesh spacing (texels): the mesh takes FACET_CELLS = 15 cells a side at TEXELS / 15 (8.53 texels) each,
+so it spans the square exactly (a 9-texel grid ran 7 texels past it and its last inner column, clamped, lay on the
+border: flat triangles); two triangles a cell (FACET_TRIANGLES)."""
+FACET_CELLS = math.ceil(TEXELS / FACET_CELL)
+FACET_STEP = TEXELS / FACET_CELLS
+FACET_TRIANGLES = 2 * FACET_CELLS * FACET_CELLS
+FACET_JITTER = 0.35
+"""The inner grid points move up to this share of a cell each way (seed FACET_SEED)."""
+FACET_SEED = 20
+FACET_OCTAVES = ((40.0, 0.55), (18.0, 0.30), (8.0, 0.15))
+"""The height field's value-noise octaves (scale in texels, amplitude); octave k is seeded k."""
+FACET_HEIGHT, FACET_RISE = 30.0, 0.8
+"""Texels of height per unit of noise; texels of rise per texel from the road line, up to FACET_RISE_MAX texels away."""
+FACET_RISE_MAX = 40.0
+FACET_LIGHT = (-0.45, -0.55, 0.70)
+FACET_SPAN = 0.45
+"""The light's span: a facet's light runs 1 - SPAN / 2 .. 1 + SPAN / 2 with its normal's cosine to FACET_LIGHT."""
+FACET_RELIEF = (14.0, 7, 0.6)
+"""The relief field: value noise (scale texels, seed) and its weight against the light's in a natural facet's shade."""
+FACET_SHADES = (0.36, 0.58)
+"""A natural facet's relief below the first is its family's dark shade, below the second its mid one, else light."""
+
+
+def _noise_grid(scale: float, seed: int) -> np.ndarray:
+    return np.random.default_rng(seed).random((int(TEXELS / scale) + 3, int(TEXELS / scale) + 3))
+
+
+def _noise_at(grid: np.ndarray, scale: float, x: float, y: float) -> float:
+    """Smoothstep value noise of `grid` at texel (x, y)."""
+    fx, fy = x / scale, y / scale
+    x0, y0 = math.floor(fx), math.floor(fy)
+    tx, ty = fx - x0, fy - y0
+    tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
+    a, b = float(grid[y0, x0]), float(grid[y0, x0 + 1])
+    c, d = float(grid[y0 + 1, x0]), float(grid[y0 + 1, x0 + 1])
+    return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty
+
+
+def _segment_distance(x: float, y: float, road) -> float:
+    best = math.inf
+    for k in range(len(road)):
+        (ax, ay), (bx, by) = road[k], road[(k + 1) % len(road)]
+        dx, dy = bx - ax, by - ay
+        ll = dx * dx + dy * dy
+        t = 0.0 if not ll else min(1.0, max(0.0, ((x - ax) * dx + (y - ay) * dy) / ll))
+        best = min(best, math.hypot(x - ax - t * dx, y - ay - t * dy))
+    return best
+
+
+def _turn(p, q, t) -> float:
+    """Twice the signed area of the texel-space triangle p, q, t (x, y first): positive as the mesh winds its cells."""
+    return (q[0] - p[0]) * (t[1] - p[1]) - (t[0] - p[0]) * (q[1] - p[1])
+
+
+def _families(painting: Painting) -> list[tuple[str, int]]:
+    """(family, shade index) of each painting colour: a FAMILIES shade's own, an OUTSIDE colour its family's light shade
+    (brown's: sand's, the colour it is)."""
+    out = []
+    for rgb in painting.colours:
+        hit = [(n, k) for n, cs in FAMILIES.items() for k, c in enumerate(cs) if tuple(c) == tuple(rgb)]
+        if not hit:
+            hit = [("sand" if n == "brown" else n, 2) for n, c in OUTSIDE.items() if tuple(c) == tuple(rgb)]
+        if not hit:
+            raise SelectError(f"select map: painting colour {rgb} is neither a FAMILIES shade nor an OUTSIDE colour")
+        out.append(hit[0])
+    return out
+
+
+def facets(rs: RomSet, course: int) -> tuple[tuple[tuple[int, int, int], ...], tuple[tuple[tuple, tuple], ...]]:
+    """(the painting's ground colour then each facet colour as RGB, per facet colour its triangles) for course
+    `course`: the 128-cell painting (`paint`) under a FACET_STEP mesh of jittered points (the border's kept on it), two
+    triangles per cell (the diagonal alternating); a triangle's family the painting's majority at its corners, centroid
+    and the corners' midpoints to the centroid (ties to the first seen); its light from the corners' heights (the
+    FACET_OCTAVES noise plus FACET_RISE per texel from the road line); a natural family (NATURAL) takes the shade of
+    FACET_RELIEF's noise at the centroid mixed with the light (FACET_SHADES), any other its painted shade moved by the
+    light. Each triangle a strip of two edges in the quad's frame, the second one point: (a, b), (c, c), wound as the
+    ground quad. Colours in order of first use. SelectError as `paint`."""
+    painting = paint(rs, course)
+    fams = _families(painting)
+    road = [_texel_of(x, z, TEXELS) for x, z in fit(_road(rs, course))]
+    n = FACET_CELLS + 1
+    rng = np.random.default_rng(FACET_SEED)
+    jit = rng.uniform(-FACET_JITTER, FACET_JITTER, (2, n, n))
+    grids = [(_noise_grid(sc, k), sc, amp) for k, (sc, amp) in enumerate(FACET_OCTAVES)]
+    relief = (_noise_grid(FACET_RELIEF[0], FACET_RELIEF[1]), FACET_RELIEF[0])
+    ln = math.sqrt(sum(v * v for v in FACET_LIGHT))
+    light = tuple(v / ln for v in FACET_LIGHT)
+    pts = {}
+    for r in range(n):
+        for c in range(n):
+            x, y = c * FACET_STEP, r * FACET_STEP
+            if 0 < c < n - 1 and 0 < r < n - 1:            # the border's points stay on it
+                x, y = x + float(jit[0, r, c]) * FACET_STEP, y + float(jit[1, r, c]) * FACET_STEP
+            h = sum(amp * _noise_at(g, sc, x, y) for g, sc, amp in grids)
+            z = FACET_HEIGHT * h + FACET_RISE * min(_segment_distance(x, y, road), FACET_RISE_MAX)
+            pts[r, c] = (x, y, z)
+    cells = painting.labels.shape[0]
+
+    def label(x: float, y: float) -> tuple[str, int]:
+        return fams[int(painting.labels[min(int(y * cells / TEXELS), cells - 1), min(int(x * cells / TEXELS), cells - 1)])]
+
+    groups: dict = {}
+    for r in range(n - 1):
+        for c in range(n - 1):
+            a, b, d, e = pts[r, c], pts[r, c + 1], pts[r + 1, c], pts[r + 1, c + 1]
+            splits = [((a, b, e), (a, e, d)), ((a, b, d), (b, e, d))]
+            if not (r + c) % 2:
+                splits.reverse()
+            split = next((t for t in splits if all(_turn(*q) > 0 for q in t)), None)
+            if split is None:                               # a jittered cell neither diagonal splits: not simple
+                raise SelectError(f"select map: facet cell ({r}, {c}) folds whichever diagonal splits it")
+            for tri in split:
+                cx, cy = sum(p[0] for p in tri) / 3, sum(p[1] for p in tri) / 3
+                samples = [label(p[0], p[1]) for p in tri] + [label(cx, cy)] + \
+                    [label((p[0] + cx) / 2, (p[1] + cy) / 2) for p in tri]
+                fam, k0 = max(dict.fromkeys(samples), key=samples.count)
+                (x0, y0, z0), (x1, y1, z1), (x2, y2, z2) = tri
+                ux, uy, uz, vx, vy, vz = x1 - x0, y1 - y0, z1 - z0, x2 - x0, y2 - y0, z2 - z0
+                nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+                nl = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+                if nz < 0:
+                    nx, ny, nz = -nx, -ny, -nz
+                cos = max(0.0, (nx * light[0] + ny * light[1] + nz * light[2]) / nl)
+                lit = 1 - FACET_SPAN / 2 + FACET_SPAN * cos
+                if fam in NATURAL:
+                    rel = FACET_RELIEF[2] * _noise_at(relief[0], relief[1], cx, cy) + \
+                        (1 - FACET_RELIEF[2]) * cos
+                    k = 0 if rel < FACET_SHADES[0] else 1 if rel < FACET_SHADES[1] else 2
+                else:
+                    k = min(2, max(0, round(k0 + (lit - 1) * 2 / FACET_SPAN * 1.2)))
+                quad = [_quad_point(p[1], p[0], TEXELS)[::2] for p in tri]
+                quad[0], quad[1] = quad[1], quad[0]     # the quad's frame mirrors texel space: wound as the ground
+                groups.setdefault(tuple(FAMILIES[fam][k]), []).append(((quad[0], quad[1]), (quad[2], quad[2])))
+    ground = painting.colours[painting.order[0]]
+    return (ground,) + tuple(groups), tuple((col, tuple(strips)) for col, strips in groups.items())
+
+
 def _road(rs: RomSet, course: int) -> list:
     """Course `course`'s road line. SelectError for a course id that is not one of the set's or a road that does not
     decode."""
@@ -586,9 +730,10 @@ def drawn_polygons(points: int, pieces) -> int:
 
 
 def map_colours(rs: RomSet, course: int) -> tuple[int, ...]:
-    """The palette entries of `parts` (the painting's ground, each painted colour, the frame, the edge, the road, the
-    start stripe): each the entry nearest its colour (`_entries`). SelectError as map_paint."""
-    return _entries(rs, map_paint(rs, course)[0])
+    """The palette entries of `parts` (the ground, each facet colour, the frame, the edge, the road, the start stripe):
+    each the entry nearest its colour (`_entries`), as `course_map` draws them (v0.2: `facets`; `map_paint`'s colours
+    before). SelectError as facets."""
+    return _entries(rs, facets(rs, course)[0])
 
 
 def _entries(rs: RomSet, colours) -> tuple[int, ...]:
@@ -615,10 +760,13 @@ def map_headers(colours) -> bytes:
     return b"".join(T.encode_tex_header(T.TexHeader(colour=c, **B.FLAT_HEADER)) for c in colours)
 
 
-def course_map(rs: RomSet, course: int) -> tuple[P.Object, bytes]:
-    """(the map object, its headers) of course `course` of `rs`: `map_object(fit(its road line), its painting's
-    strips)` (`map_paint`) and the flat headers of its parts' palette entries (`map_headers`, `map_colours`).
+def course_map(rs: RomSet, course: int, faceted: bool = True) -> tuple[P.Object, bytes]:
+    """(the map object, its headers) of course `course` of `rs`: `map_object(fit(its road line), its facets'
+    triangles)` (`facets`, v0.2; `map_paint`'s strips before) and the flat headers of its parts' palette entries
+    (`map_headers`: the ground's and each facet colour's, then the frame, edge, road and stripe's). `faceted=False`
+    draws v0.1.2's map instead (`map_paint`'s strips and colours): release.release_set without the Course Direction
+    screen, which rebuilds v0.1.2.
     SelectError for a course whose road or scenery does not decode."""
     road = _road(rs, course)
-    colours, pieces = map_paint(rs, course)
+    colours, pieces = facets(rs, course) if faceted else map_paint(rs, course)
     return map_object(fit(road), tuple(strips for _, strips in pieces)), map_headers(_entries(rs, colours))

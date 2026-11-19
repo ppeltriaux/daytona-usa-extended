@@ -8,7 +8,12 @@ and list block included, but for the off-road cells Phase 5 pinned: tests/test_d
   becomes (x, y, 0.0 - z), in the same corner order: the Dreamcast's cells have positive signed XZ area in its own
   z (all eight courses), so negating z gives the arcade's negative area (the TGP's edge test is one-sided) with no
   reordering. `0.0 - z` keeps a zero +0.0, as the arcade's are (n 2's road has such z: byte for byte only so). The
-  centre likewise; the direction word (a u16 on the disc) - 0x8000, as s16 (DIRECTION_OFFSET).
+  centre likewise; the direction word (a u16 on the disc) - 0x8000, as s16 (DIRECTION_OFFSET). A file whose every
+  cell is wound the other way (the R files of n 0-2: each cell the plain one's corners mirrored) is re-wound whole,
+  each cell's corners reversed (`rewound`), which gives the plain cell turned by two, as n 3-7's R files hold it;
+  a file with both windings is refused. A reverse file's cell neither repair below makes convex takes the plain
+  course's same-index cell (`plain=`), its corners in the R cell's order, when each is within PLAIN_SNAP of one of
+  the R cell's (4R's off-road cell 1765, two corners 0.1 off in x and z); its centre and direction stay the R file's.
 - a corner that lies on the line through its two neighbours within f32 rounding (at most NUDGE_ULPS ulps from it)
   but on the notch side is moved outward by the fewest f32 ulps (at most NUDGE_ULPS on each axis) that make the
   polygon convex: tgp's encoder refuses the notch, which is narrower than an ulp (n 3 has two such cells, off the
@@ -37,7 +42,7 @@ and list block included, but for the off-road cells Phase 5 pinned: tests/test_d
 
 ConvertError for a `d` the race tables refuse (`tables._check`), a cell the arcade's ground cannot hold (not a Cell;
 corners that are not four finite single-precision triples or that lie outside WORLD; a centre that is not; a
-direction word past u16; zero or positive XZ area once z is negated; a notch the two repairs cannot close within
+direction word past u16; zero XZ area, or a winding unlike cell 0's; a notch the two repairs cannot close within
 MAX_MOVE and HEIGHT_TOLERANCE), a malformed
 H2 / H7, a list block too long for the grid's u16 values, or a course that is not an arcade course id."""
 
@@ -62,6 +67,9 @@ NUDGE_ULPS = 4                      # a corner this many f32 ulps from its neigh
 MAX_MOVE = 0.0625                   # units: the farthest a notch corner moves onto its neighbours' line ("line")
 HEIGHT_TOLERANCE = 0.005            # units: the most a repair may change a height the TGP answers (stated a priori:
                                     # docs/spike/2026-11-courses-4-7.md, "Ground repair")
+PLAIN_SNAP = 0.25                   # units: the farthest a cell's corner may be from the plain course's corner it
+                                    # borrows (`plain=`: 4R's cell 1765 is 0.1 off in x and z at two corners, 0.141;
+                                    # its corners are over a unit apart)
 F32_PLANE = 6 * 2.0 ** -24          # the TGP's plane height: six f32 roundings of terms up to COORD_LIMIT x slope
 _U16_MAX = 0xFFFF
 
@@ -183,8 +191,9 @@ def _convex(corners: tuple, what: str) -> tuple[tuple, str | None]:
     return _nudge(trial, j, what), "line"
 
 
-def _poly(cell, k: int) -> tuple[tgp.GroundPoly, str | None]:
-    """Polygon k of a cell and how it was repaired (`_convex`)."""
+def _corners(cell, k: int) -> tuple[tuple, str]:
+    """(the four corners of cell k, z negated, as `_xyz`; the cell's name for errors); ConvertError for a cell that
+    is not a Cell or whose corners are not four finite triples inside WORLD."""
     what = f"course data: cell {k}"
     if not isinstance(cell, Cell):
         raise ConvertError(f"{what}: {type(cell).__name__} is not a Cell")
@@ -194,11 +203,75 @@ def _poly(cell, k: int) -> tuple[tgp.GroundPoly, str | None]:
         if not _inside(c):
             raise ConvertError(f"{what}: corner {j} at x {c[0]}, z {c[2]} (z negated) is outside the world "
                                f"{WORLD[0]}..{WORLD[1]}")
+    return corners, what
+
+
+def _flip(cells) -> bool:
+    """True when cell 0 is wound the other way (XZ area at least MIN_AREA once z is negated): the whole file is then
+    re-wound (`rewound`). ConvertError as `_corners` for a malformed cell 0 (the error _poly would raise first)."""
+    return len(cells) > 0 and _area(_corners(cells[0], 0)[0]) >= tgp.MIN_AREA
+
+
+def _wound(corners, what: str, flip: bool) -> tuple:
+    """`corners` in the arcade's winding: reversed when the file is re-wound (`flip`); ConvertError when the cell's
+    own winding is not the file's (or its area is about zero)."""
     a = _area(corners)
+    if flip:
+        if not a >= tgp.MIN_AREA:
+            raise ConvertError(f"{what}: XZ area {a} once z is negated is negative, unlike cell 0's: a file wound the "
+                               f"other way (every cell, as the Dreamcast's R files of the arcade's three) is re-wound "
+                               f"whole, a mixed one refused")
+        return corners[::-1]
     if not a <= -tgp.MIN_AREA:
         raise ConvertError(f"{what}: XZ area {a} once z is negated is not negative: the TGP's one-sided edge test "
                            f"needs the arcade's winding (the Dreamcast's cells have positive area in its z)")
-    corners, how = _convex(corners, what)
+    return corners
+
+
+def rewound(d: CourseData) -> bool:
+    """Whether `d`'s cells are all wound the other way (positive XZ area once z is negated: the Dreamcast's R files
+    of the arcade's three, n 0-2), so that convert_ground takes every cell's corners in reverse order; False for the
+    arcade's winding. ConvertError for a file with both windings (naming its first cell unlike cell 0), and as
+    convert_ground for a malformed cell or race table."""
+    tables.attributes(d)                            # validates d's race tables (tables._check), cells a sequence
+    flip = _flip(d.cells)
+    for k, c in enumerate(d.cells):
+        corners, what = _corners(c, k)
+        _wound(corners, what, flip)
+    return flip
+
+
+def _from_plain(corners, plain_cell, k: int, plain_flip: bool) -> tuple | None:
+    """The plain course's cell k's corners (in the arcade's winding) taken in the order of `corners`, each the one
+    within PLAIN_SNAP of the corner it replaces; None unless all four match one each and keep the arcade's winding."""
+    pc, what = _corners(plain_cell, k)
+    pc = _wound(pc, f"plain {what}", plain_flip)
+    out = []
+    for c in corners:
+        near = [q for q in pc if math.dist(q, c) <= PLAIN_SNAP and q not in out]
+        if len(near) != 1:
+            return None
+        out.append(near[0])
+    out = tuple(out)
+    return out if _area(out) <= -tgp.MIN_AREA else None
+
+
+def _poly(cell, k: int, flip: bool = False, plain_cell=None,
+          plain_flip: bool = False) -> tuple[tgp.GroundPoly, str | None]:
+    """Polygon k of a cell and how it was repaired (`_convex`); its corners reversed first when the file is re-wound
+    (`flip`, `rewound`). A cell neither repair makes convex takes `plain_cell`'s corners when they are the same cell
+    (`_from_plain`; how "plain"), else the refusal stands."""
+    corners, what = _corners(cell, k)
+    corners = _wound(corners, what, flip)
+    try:
+        corners, how = _convex(corners, what)
+    except ConvertError as e:
+        if isinstance(plain_cell, _Unmatched):
+            raise ConvertError(f"{e}; {plain_cell.message}") from e
+        swap = None if plain_cell is None else _from_plain(corners, plain_cell, k, plain_flip)
+        if swap is None:
+            raise
+        corners, how = _convex(swap, what)[0], "plain"
     centre = _xyz(cell.centre, "centre", what)
     d = _int(cell.direction, "direction", 0, _U16_MAX, what, ConvertError)
     p = tgp.GroundPoly(corners, (), centre, d - DIRECTION_OFFSET)          # a u16 less 0x8000: an s16
@@ -244,29 +317,57 @@ def _grid(polys) -> tuple[tuple[int, ...], dict[int, tuple[int, ...]], tuple[int
     return tuple(grid), lists, tuple(block)
 
 
-def convert_ground(d: CourseData, course: int = 0) -> tgp.Ground:
+class _Unmatched:
+    """What a cell may borrow when `plain` holds another number of cells (5R has one more than 5): nothing; a cell
+    that needs to borrow is refused naming both counts."""
+    def __init__(self, plain_count: int, count: int):
+        self.message = (f"ground: the plain course data has {plain_count} cells, this one {count}: a cell can borrow "
+                        f"only from the same course's plain file, cell for cell")
+
+
+def _lenders(d: CourseData, plain) -> list:
+    """Per cell of `d`, what it may borrow (`_poly`'s plain_cell): None without `plain`, the plain cell of the same
+    index, or `_Unmatched` when the cell counts differ; and whether the plain file is re-wound. ConvertError for a
+    `plain` that is not CourseData (d's cells already a sequence)."""
+    if plain is None:
+        return [None] * len(d.cells), False
+    if not isinstance(plain, CourseData):
+        raise ConvertError(f"ground: plain {type(plain).__name__} is not CourseData")
+    cells = tuple(_seq(plain.cells, None, "cells", "ground: plain course data", ConvertError))
+    if len(cells) != len(d.cells):
+        return [_Unmatched(len(cells), len(d.cells))] * len(d.cells), False
+    return list(cells), _flip(cells)
+
+
+def convert_ground(d: CourseData, course: int = 0, plain: CourseData | None = None) -> tgp.Ground:
     """The arcade's ground of `d` for course id `course` (0-15: a grown set's ids; `base` too): the polygons from the
     cells, the grid, lists and list block rebuilt by the arcade's rule, the attribute bytes copied; addresses 0 (module
-    docstring).
-    ConvertError for what the module docstring lists."""
+    docstring). `plain`, the plain course's data for a reverse file, lends a cell neither repair makes convex its
+    same-index cell when every corner is within PLAIN_SNAP of one of it (4R's off-road cell 1765); otherwise unused.
+    ConvertError for what the module docstring lists, and for a cell that must borrow from a `plain` with
+    another number of cells."""
     if not is_int(course) or not 0 <= course < COURSE_IDS:
         raise ConvertError(f"ground: course {course!r} is not an arcade course id 0..{COURSE_IDS - 1}")
     course = int(course)
     attributes = tables.attributes(d)               # validates d's race tables (tables._check), cells a sequence
-    polys = tuple(_poly(c, k)[0] for k, c in enumerate(d.cells))
+    flip = _flip(d.cells)
+    lenders, pflip = _lenders(d, plain)
+    polys = tuple(_poly(c, k, flip, lenders[k], pflip)[0] for k, c in enumerate(d.cells))
     _check_dc_grid(d, len(polys))
     grid, lists, block = _grid(polys)
     return tgp.Ground(course, grid, attributes, polys, lists, course, block, 0, 0, 0, 0)
 
 
-def repairs(d: CourseData) -> dict[int, str]:
+def repairs(d: CourseData, plain: CourseData | None = None) -> dict[int, str]:
     """{cell index: how} for every cell of `d` convert_ground repairs to make it convex: "ulps" (a collinear corner
-    nudged) or "line" (a wider notch's corner moved onto its neighbours' line); module docstring. ConvertError as
-    convert_ground for a `d` it refuses."""
+    nudged), "line" (a wider notch's corner moved onto its neighbours' line) or "plain" (the plain course's cell
+    borrowed, `plain` as convert_ground's); module docstring. ConvertError as convert_ground for a `d` it refuses."""
     tables.attributes(d)                            # validates d's race tables (tables._check), cells a sequence
+    flip = _flip(d.cells)
+    lenders, pflip = _lenders(d, plain)
     out = {}
     for k, c in enumerate(d.cells):
-        how = _poly(c, k)[1]
+        how = _poly(c, k, flip, lenders[k], pflip)[1]
         if how is not None:
             out[k] = how
     return out
@@ -280,6 +381,21 @@ REPAIRED: dict[int, dict[int, str]] = {
     4: {**dict.fromkeys((792, 1215, 1428, 1474, 1479, 2038, 2085, 2151, 2167, 2168), "ulps"), 2082: "line"},
     5: {**dict.fromkeys((130, 214, 215, 216, 218, 222, 225, 418, 559, 561, 563, 566, 568, 725, 773, 775, 818, 857),
                         "ulps"), 410: "line"},
+    6: {**dict.fromkeys((594, 619, 621, 643, 864, 1062, 1134, 1427, 1487), "ulps"), 2256: "line"},
+    7: {**dict.fromkeys((603, 822, 1123, 1313, 1448, 1782, 1883, 2263, 2311, 2356, 2671, 2696), "ulps"),
+        2334: "line"},
+}
+
+# What `repairs(R, plain=P)` gives on each Dreamcast R file (course n's reverse, arcade id n + 8) that has a repair:
+# n 0-2 none (re-wound, `rewound`); n 3-7 the plain file's repairs at the cells the R file keeps in place, 4R's cell
+# 1765 borrowed from the plain file ("plain"), 5R (reordered, one cell more) its own indices. Measured 17 Nov 2026,
+# pinned by tests/test_convert_ground.py.
+REPAIRED_R: dict[int, dict[int, str]] = {
+    3: {1689: "ulps", 1915: "ulps"},
+    4: {**dict.fromkeys((1215, 1218, 1428, 1474, 1479, 2038, 2085, 2151, 2167, 2168), "ulps"), 1765: "plain",
+        2082: "line"},
+    5: dict.fromkeys((130, 214, 215, 216, 220, 221, 222, 238, 419, 560, 562, 564, 567, 569, 726, 775, 778, 821, 860),
+                     "ulps"),
     6: {**dict.fromkeys((594, 619, 621, 643, 864, 1062, 1134, 1427, 1487), "ulps"), 2256: "line"},
     7: {**dict.fromkeys((603, 822, 1123, 1313, 1448, 1782, 1883, 2263, 2311, 2356, 2671, 2696), "ulps"),
         2334: "line"},

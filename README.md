@@ -2,15 +2,17 @@
 
 Daytona USA Extended is the 1994 Sega Model 2 arcade *Daytona USA* with eight courses: its own three, byte for byte
 (Three Seven Speedway, Dinosaur Canyon, Sea-Side Street Galaxy) and five converted from the Dreamcast's *Daytona USA*
-(2001): Desert City, National Park Speedway, Circuit Pixie, Rin Rin Rink and Mermaid Lake. The five race on the arcade's
-own engine in MAME: its field of cars, its checkpoints, its render rate. The project page:
+(2001): Desert City, National Park Speedway, Circuit Pixie, Rin Rin Rink and Mermaid Lake. Each of the eight also runs
+in reverse. The five race on the arcade's own engine in MAME: its field of cars, its checkpoints, its render rate. The
+project page:
 https://continuearcade.com/daytona-usa-extended/
 
 This repository is a converter: one command builds the game on your machine from your own copies of the arcade game and
 of the Dreamcast disc. It holds none of either (see "Legal").
 
-> **v0.1.2 is a very early release, still under development.** All eight courses load and race on the arcade's engine,
-> but laps and opponents are not tuned yet and the new courses have rendering defects: see "Known issues".
+> **v0.2 is an early release, still under development.** All eight courses and their reverses load and race on the
+> arcade's engine, but laps and opponents are not tuned yet and the new courses have rendering defects: see "Known
+> issues".
 
 ## What you need
 
@@ -81,10 +83,21 @@ build/mame/model2 daytona -rompath ~/daytona-extended -nvram_directory ~/daytona
 **In the game:** the attract logo reads DAYTONA USA with "Extended" under DAYTONA. Circuit Select scrolls through eight
 courses as you turn the wheel: THREE SEVEN SPEEDWAY, DINOSAUR CANYON, SEA-SIDE STREET GALAXY, then DESERT CITY,
 NATIONAL PARK SPEEDWAY, CIRCUIT PIXIE, RIN RIN RINK and MERMAID LAKE. Every panel shows its course's name; the five new
-ones also show their laps for the game mode and a painted map of the course.
+ones also show their laps for the game mode and a map of the course. After Circuit Select a Course Direction screen
+shows the course's map twice: turn the wheel to the right for REVERSE (the red arrow) or leave it for NORMAL (the
+white one), then press the gas; REVERSE runs the course the other way round, with its own time limits, pit stalls and
+best times.
 
 ## Changes
 
+- **v0.2:** every course in reverse. A Course Direction screen after Circuit Select picks NORMAL or REVERSE; the eight
+  courses in reverse (the arcade's three included) race with their own time limits (measured, as the five converted
+  courses', against the computer-driven field), the Dreamcast's reverse pit stalls and their own best-time tables. The
+  arcade's pit stop compared angles without wrapping, so on Dinosaur Canyon and Desert City in reverse the stop failed;
+  it is patched. Circuit Select's maps for the five Dreamcast courses are drawn as a faceted landscape of each course's
+  own ground. The road no longer vanishes for a moment at a few spots on the Dreamcast courses (the game's culling
+  dropped the cell the camera still saw; the road is now filed in the neighbouring cells too). v0.2 changes the set,
+  so rebuild; best times from v0.1.x are kept.
 - **v0.1.2:** Mermaid Lake and Circuit Pixie no longer draw the Dreamcast's road shadows as black bands under the start
   gantry, the bridge and the checkpoint arch; the race is unchanged. Mermaid Lake's road no longer vanishes around the
   car while the camera comes down onto it before the start. Pit stops work on courses 3 to 7: the car is guided to its
@@ -102,14 +115,17 @@ ones also show their laps for the game mode and a painted map of the course.
 
 ## Known issues
 
-- **Time limits are measured, not played in:** courses 3 to 7 take their times from the computer-driven field's pace,
-  with the arcade's own courses' slack; the normal race at the default difficulty was driven in MAME, the long races
+- **Time limits are measured, not played in:** courses 3 to 7 and all eight reverses take their times from the
+  computer-driven field's pace, with the arcade's own courses' slack; the normal race at the default difficulty was driven in MAME, the long races
   and other difficulties are derived. Their laps and opponents are not tuned. The arcade's three keep their own.
 - **Two courses draw a shorter view:** Circuit Pixie and Rin Rin Rink draw less far ahead (far scenery appears a little
   later), so they stay within the arcade's polygon budget.
 - **Mermaid Lake** was raised 41 units to fit the arcade's ground; an invisible lift is possible.
 - **Rendering defects on the five new courses:** one flat grey frame about a second after the start, and thin black
-  seams cross the road (seen on National Park Speedway and Circuit Pixie).
+  seams cross the road (seen on National Park Speedway and Circuit Pixie). The background can still show through for a
+  moment at a few spots: beside the road on National Park Speedway, at the edge of the ground when you run wide off
+  the road, and once a lap on Three Seven Speedway in reverse. On Desert City the farthest scenery can drop out for a
+  moment where the most is in view.
 - **Windows:** built and tested in GitHub Actions on Windows Server (`windows-latest`); the set has not yet been built
   and played on a Windows PC.
 - **Tested only in MAME:** the set was played on macOS on Apple silicon only. Nothing was tried on real hardware. `dtools build` was

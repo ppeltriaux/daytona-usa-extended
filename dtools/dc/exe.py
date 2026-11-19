@@ -64,6 +64,9 @@ PIT_STALLS = 8                      # per group: one per car ident (car +0x4 & 7
 PIT_WAYPOINTS = 7                   # per stall
 PIT_RECORD = 12                     # x, z, speed f32
 PIT_END = PIT_POINTERS + 4 * PIT_GROUPS * PIT_STALLS
+GRID_BASES_AT = 0x17E814            # u16 x ENTRIES: each course's grid base, by entry 8 * VARIANTS.index(v) + n
+LAPS_AT = 0x17EB7C                  # u32 x ENTRIES: each course's laps (the arcade's mode-0 laps for n 0-2)
+CARS_AT = 0x17EBFC                  # u32 x ENTRIES: each course's car count
 PIT_PAIRS = (0, 2, 1, 3, 4, 5, 6, 7)
 """Course n's pair of pit groups (plain 2 * PIT_PAIRS[n], R the next): Beginner, Advanced, Expert, then 3-7."""
 
@@ -226,3 +229,34 @@ def pit_stalls(exe, n: int, v: str = "") -> tuple[tuple[PitWaypoint, ...], ...]:
     if not isinstance(v, str) or v not in ("", "R"):
         raise DcError(f"pit stalls: variant {v!r} is not one of ('', 'R')")
     return decode_pit_stalls(exe)[2 * PIT_PAIRS[n] + (v == "R")]
+
+
+def _variant_entry(exe, at: int, width: int, n, v, what: str) -> int:
+    """Entry 8 * VARIANTS.index(v) + n of the table of ENTRIES words of `width` bytes at file offset `at`."""
+    b = _bytes(exe)
+    n = _int(n, "course", 0, COURSE_COUNT - 1, what, DcError)
+    if not isinstance(v, str) or v not in VARIANTS:
+        raise DcError(f"{what}: variant {v!r} is not one of {VARIANTS}")
+    end = at + width * ENTRIES
+    if len(b) < end:
+        raise DcError(f"{EXE_NAME}: the file is too short ({len(b):#x} bytes) for the {what} table at {at:#x}..{end:#x}")
+    return struct.unpack_from("<H" if width == 2 else "<I", b, at + width * (8 * VARIANTS.index(v) + n))[0]
+
+
+def grid_base(exe, n: int, v: str = "") -> int:
+    """Course n's (0-7) grid base for variant v in `exe` (the bytes of 1ST_READ.BIN): u16 at GRID_BASES_AT. All four
+    variants hold the same eight values on the disc (measured, M9 stage 1). DcError for an n or v outside those or a
+    file too short."""
+    return _variant_entry(exe, GRID_BASES_AT, 2, n, v, "grid bases")
+
+
+def laps(exe, n: int, v: str = "") -> int:
+    """Course n's laps for variant v (u32 at LAPS_AT; the same in all four variants on the disc). DcError as
+    grid_base."""
+    return _variant_entry(exe, LAPS_AT, 4, n, v, "laps")
+
+
+def cars(exe, n: int, v: str = "") -> int:
+    """Course n's car count for variant v (u32 at CARS_AT; the same in all four variants on the disc). DcError as
+    grid_base."""
+    return _variant_entry(exe, CARS_AT, 4, n, v, "cars")

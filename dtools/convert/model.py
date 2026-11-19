@@ -56,6 +56,14 @@ docs/formats/model2-polygon-rom.md):
   too agree), its coordinate on the cut axis exactly the edge's, (u, v) interpolated; slices fanned into quads and a
   last triangle; each piece filed under its own centroid's cell. A neighbour that is not cut keeps the whole edge (a
   T-junction).
+- the road copied across cell edges (`road_copy`, per course: build.ROAD_COPY; v0.2, Pascal's report on Rin Rin
+  Rink): the game's view test opens the cell of a point just ahead of the camera and the neighbours in a 90-degree
+  wedge ahead of it, so where the road crosses a cell edge (at about 45 degrees, the wedge's quadrant boundary) it can
+  drop the row of cells the camera, trailing the car, still sees: the road there vanished for a few frames and the
+  backdrop or the ground under the road showed (measured with dtools/mame/lua/holes_log.lua). A near-flat polygon by
+  the road is filed in each neighbouring cell it comes near as well as its own, so it draws whichever is open; only
+  by the road and only near the edge, since a copy counts against the frame's object budget (OBC) when both cells
+  are open.
 - records (Beginner's attribute bits): a drawn polygon is a triangle (attr & 3 == 2) or a quad (1); link (bits 8-9,
   copied into bits 23-24 as on every Beginner record), z-sort 2 (max z), texture-header step 1 (one header per drawn
   polygon), bit 17 double-sided, texture parameter TEX_PARAM, distance coefficient `lod_coef` of the polygon's
@@ -719,7 +727,69 @@ def _without(m: pol.Model, drop: set) -> pol.Model:
     return pol.Model(m.header, tuple(objects), m.textures)
 
 
-def convert_model(m, quad=None, points=None, cell_cut=None) -> dict[int, tuple[Piece, ...]]:
+ROAD_COPY_FLAT = 0.8
+"""A polygon is ground for `road_copy` when its normal's vertical component is at least this share of its length."""
+
+
+def _road_copy(road_copy):
+    """`convert_model`'s `road_copy` checked: None, or (road centres as a list of at least three (x, z) pairs, margin,
+    band) with margin and band finite numbers >= 0; returned as (centres, margin, band) of floats."""
+    if road_copy is None:
+        return None
+    ok = isinstance(road_copy, (tuple, list)) and len(road_copy) == 3
+    if ok:
+        road, margin, band = road_copy
+        ok = (isinstance(road, (tuple, list)) and len(road) >= 3 and all(
+            isinstance(q, (tuple, list)) and len(q) == 2 and all(is_number(v) and math.isfinite(v) for v in q)
+            for q in road) and all(is_number(v) and math.isfinite(v) and v >= 0 for v in (margin, band)))
+    if not ok:
+        raise ConvertError(f"road_copy {road_copy!r:.60} is not (road centres: three or more (x, z), margin >= 0, "
+                           f"band >= 0)")
+    return [(float(x), float(z)) for x, z in road], float(margin), float(band)
+
+
+def _road_distance(x: float, z: float, road) -> float:
+    """The distance from (x, z) to the closed polyline `road` (plain float arithmetic)."""
+    best = math.inf
+    for k in range(len(road)):
+        (ax, az), (bx, bz) = road[k], road[(k + 1) % len(road)]
+        dx, dz = bx - ax, bz - az
+        ll = dx * dx + dz * dz
+        t = 0.0 if not ll else min(1.0, max(0.0, ((x - ax) * dx + (z - az) * dz) / ll))
+        best = min(best, math.hypot(x - ax - t * dx, z - az - t * dz))
+    return best
+
+
+def _copy_cells(p: _Poly, home: int, copy) -> list[int]:
+    """The neighbouring cells `p` (filed in `home`) is copied to under `road_copy` (`copy`, checked): none unless it is
+    near-flat (ROAD_COPY_FLAT) with its centroid within band of the road; else each neighbour (edge or diagonal) whose
+    square (CELL_EDGES) its corners' extent comes within margin of."""
+    road, margin, band = copy
+    c = p.corners
+    (x0, y0, z0), (x1, y1, z1), (x2, y2, z2) = c[0], c[1], c[2]
+    ux, uy, uz, vx, vy, vz = x1 - x0, y1 - y0, z1 - z0, x2 - x0, y2 - y0, z2 - z0
+    nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+    length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if not length or abs(ny) < ROAD_COPY_FLAT * length:
+        return []
+    xs, zs = [q[0] for q in c], [q[2] for q in c]
+    if _road_distance(sum(xs) / len(xs), sum(zs) / len(zs), road) > band:
+        return []
+    row, col = home >> 4, home & 15
+    out = []
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if not (dr or dc) or not (0 <= row + dr < 16 and 0 <= col + dc < 16):
+                continue
+            lo_x, hi_x = CELL_EDGES[col + dc], CELL_EDGES[col + dc + 1]
+            lo_z, hi_z = CELL_EDGES[row + dr], CELL_EDGES[row + dr + 1]
+            if max(xs) + margin >= lo_x and min(xs) - margin <= hi_x and \
+                    max(zs) + margin >= lo_z and min(zs) - margin <= hi_z:
+                out.append((row + dr) << 4 | (col + dc))
+    return out
+
+
+def convert_model(m, quad=None, points=None, cell_cut=None, road_copy=None) -> dict[int, tuple[Piece, ...]]:
     """The course model `m` as polygon objects per scenery cell: cell (row << 4 | col) -> its Pieces (one object
     each, at most MAX_RECORDS records; several when the cell has more), only the cells that hold a polygon. Every
     non-degenerate triangle of `pol.triangles(m)` is drawn by exactly one record of one Piece (`Piece.sources`), or by
@@ -744,19 +814,29 @@ def convert_model(m, quad=None, points=None, cell_cut=None) -> dict[int, tuple[P
 
     `cell_cut`: per course (build.CELL_CUT; v0.1.2), the world units a polygon may reach past its own cell before it
     is cut on the cell grid (the module docstring, "long polygons cut on the cell grid"), after the texture point cut;
-    None cuts nothing. ConvertError also for a `cell_cut` that is neither None nor a finite number >= 0."""
+    None cuts nothing. ConvertError also for a `cell_cut` that is neither None nor a finite number >= 0.
+
+    `road_copy`: per course (build.ROAD_COPY; v0.2), (the road line's centres (x, z), margin, band): a near-flat
+    polygon whose centroid is within `band` units of the road line is also filed in each neighbouring cell its extent
+    comes within `margin` units of (`_copy_cells`; the module docstring, "the road copied across cell edges"), so such
+    a triangle is drawn by one record in each of those cells; None copies nothing. ConvertError also for a bad
+    `road_copy` (`_road_copy`)."""
     if cell_cut is not None and not (is_number(cell_cut) and math.isfinite(cell_cut) and cell_cut >= 0):
         raise ConvertError(f"cell_cut {cell_cut!r:.40} is not a finite number of world units >= 0")
     if points is not None and not (isinstance(points, dict) and all(
             is_int(t) and isinstance(v, tuple) and len(v) == 2 and all(is_int(x) and x > 0 for x in v)
             for t, v in points.items())):
         raise ConvertError(f"points {points!r:.60} is not a dict of texture index -> (width, height)")
+    copy = _road_copy(road_copy)
     polys = _polygons(m, _quad(quad))
     sizes = [(int(t.width), int(t.height)) for t in m.textures]
     cells: dict[int, list[_Poly]] = defaultdict(list)
     for p in (r for p0 in polys for q in _cut(p0, points, sizes) for r in _cell_cut(q, cell_cut, sizes)):
         c = np.asarray(p.corners, dtype=float)
-        cells[cell_of(float(c[:, 0].mean()), float(c[:, 2].mean()))].append(p)
+        home = cell_of(float(c[:, 0].mean()), float(c[:, 2].mean()))
+        cells[home].append(p)
+        for other in (_copy_cells(p, home, copy) if copy else ()):
+            cells[other].append(p)
     return {cell: _pieces(cells[cell]) for cell in sorted(cells)}
 
 

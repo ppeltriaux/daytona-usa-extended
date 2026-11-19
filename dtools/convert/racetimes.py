@@ -26,6 +26,10 @@ ORIGINALS = (0, 1, 2)
 CONVERTED = (3, 4, 5, 6, 7)
 PIXIE = 5                                   # Circuit Pixie: lap line only, takes Three Seven Speedway's mode-0 factors
 PIXIE_SOURCE = 0
+REVERSE = tuple(range(8, 16))               # M9 stage 4: the reverses (id n + 8), derived by the same rule
+LAP_LINE_SOURCE = {PIXIE: PIXIE_SOURCE, 8: PIXIE_SOURCE, 13: PIXIE_SOURCE}
+"""The courses with the lap line only and the original whose factors they take in every mode: Circuit Pixie, and
+(M9) Three Seven Speedway reverse and Circuit Pixie reverse, as Circuit Pixie: Three Seven Speedway's."""
 MODES = (0, 1, 2)
 DIFFICULTIES = (0, 1, 2, 3)
 READINGS = ("after", "before")
@@ -68,7 +72,7 @@ def _check(measured, cid, k):
                          f"{m.get('lap')=}, sectors {m.get('sectors')}")
 
 
-def factors(measured, originals, laps, checkpoints):
+def factors(measured, originals, laps, checkpoints, ids=CONVERTED):
     """The slack of the originals, everything recorded:
     {"reading": "after"|"before",
      "readings": {reading: {"cv": mean over ids 1, 2 of the coefficient of variation of word / paid sector over the
@@ -78,8 +82,8 @@ def factors(measured, originals, laps, checkpoints):
      "flat": {mode (1, 2): {"start": mean start / reference lap time, "ext": as mode0's ext, "per_original": {...}}},
      "ratios": {(mode, d): {"ratio": mean over originals of the mean over words of word_d / word_1, "per_original"}},
      "race": {mode: {"ratio": mean over originals of allowance / race_time at difficulty 1, "per_original"}},
-     "course": {id 3-7: {"start", "ext", "flat": {1, 2: {"start", "ext"}}, "race": {mode: ratio}}} (id 5 = id 0's in
-     every mode)}
+     "course": {id of `ids` (3-7 by default; REVERSE too, M9): {"start", "ext", "flat": {1, 2: {"start", "ext"}},
+     "race": {mode: ratio}}} (the LAP_LINE_SOURCE courses = id 0's in every mode)}
     Flat modes (1, 2): start word / lap time, and one identical word on every pass over the mean sector; ratios cover
     the words the race adds (the phantom last word excluded)"""
     measured = _norm(measured)
@@ -134,28 +138,29 @@ def factors(measured, originals, laps, checkpoints):
         race[m] = {"ratio": statistics.fmean(per.values()), "per_original": per}
     out["race"] = race
     def course(c):
-        if c == PIXIE:                      # Circuit Pixie: id 0's factors in every mode
-            return {"start": mode0[PIXIE_SOURCE]["start"], "ext": mode0[PIXIE_SOURCE]["ext"],
-                    "flat": {m: dict(flat[m]["per_original"][PIXIE_SOURCE]) for m in (1, 2)},
-                    "race": {m: race[m]["per_original"][PIXIE_SOURCE] for m in MODES}}
+        if c in LAP_LINE_SOURCE:            # the lap line only: its source original's factors in every mode
+            src = LAP_LINE_SOURCE[c]
+            return {"start": mode0[src]["start"], "ext": mode0[src]["ext"],
+                    "flat": {m: dict(flat[m]["per_original"][src]) for m in (1, 2)},
+                    "race": {m: race[m]["per_original"][src] for m in MODES}}
         return {"start": out["mode0"]["start"], "ext": out["mode0"]["ext"],
                 "flat": {m: {"start": flat[m]["start"], "ext": flat[m]["ext"]} for m in (1, 2)},
                 "race": {m: race[m]["ratio"] for m in MODES}}
-    out["course"] = {c: course(c) for c in CONVERTED}
+    out["course"] = {c: course(c) for c in ids}
     return out
 
 
-def derive(measured, originals, laps, checkpoints):
-    """{id 3-7: {(mode, difficulty): words}} for modes 0-2, difficulties 0-3, each table 1 + laps * (k + 1) words.
+def derive(measured, originals, laps, checkpoints, ids=CONVERTED):
+    """{id of `ids` (3-7 by default; REVERSE too, M9 stage 4): {(mode, difficulty): words}} for modes 0-2, difficulties 0-3, each table 1 + laps * (k + 1) words.
     Difficulty 1: mode 0's pass word = round(extension factor * the reference sector it pays for), the same every lap;
     modes 1, 2: every pass word = round(flat extension factor * the mean reference sector). The start, every mode:
     round(the course's race ratio * race_time - the words the race adds), at least ceil(START_FLOOR * reference start
     sector). Difficulty d: round(difficulty-1 word * the originals' mean d/1 ratio of that mode). The phantom last
     word is the one that pass would have."""
     measured = _norm(measured)
-    f = factors(measured, originals, laps, checkpoints)
+    f = factors(measured, originals, laps, checkpoints, ids)
     out = {}
-    for cid in CONVERTED:
+    for cid in ids:
         k = checkpoints[cid]
         _check(measured, cid, k)
         m = measured[cid]

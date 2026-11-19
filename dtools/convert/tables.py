@@ -23,6 +23,8 @@ through."""
 
 from __future__ import annotations
 
+import dataclasses
+
 from dtools.arcade import course as C
 from dtools.arcade.tablebase import _f32, _int, _seq, is_int
 from dtools.convert import ConvertError
@@ -129,6 +131,42 @@ def _check(d) -> None:
 
 # ---- the tables ----
 
+def _empty(ln) -> bool:
+    """An unused lane slot: position (0, 0, 0) (the disc's (0, 0, -0.0))."""
+    return (ln.x, ln.y, ln.z) == (0.0, 0.0, 0.0)
+
+
+def lane_ranges_fixed(d: CourseData) -> dict[int, tuple[int, int]]:
+    """{road point index: (lane_lo, lane_hi)} for every road point whose used range names an empty slot: its range
+    mirrored, (LANES - 1 - lane_hi, LANES - 1 - lane_lo), which must be exactly its non-empty slots. 1R's road
+    points hold the plain lanes mirrored (lane j the plain lane LANES - 1 - j) but keep the plain range where it is
+    not symmetric; every other file gives {}. ConvertError for a `d` that `_check` refuses, and for a range naming
+    an empty slot whose mirror is not exactly the non-empty slots."""
+    _check(d)
+    out = {}
+    for k, r in enumerate(d.road):
+        lo, hi = int(r.lane_lo), int(r.lane_hi)
+        if not any(_empty(r.lanes[j]) for j in range(lo, hi + 1)):
+            continue
+        mlo, mhi = C.LANES - 1 - hi, C.LANES - 1 - lo
+        if any(_empty(ln) == (mlo <= j <= mhi) for j, ln in enumerate(r.lanes)):
+            raise ConvertError(f"course data: road point {k}: lanes {lo}..{hi} name an empty slot, and the mirrored "
+                               f"range {mlo}..{mhi} is not exactly its non-empty slots")
+        out[k] = (mlo, mhi)
+    return out
+
+
+def with_lane_ranges_fixed(d: CourseData) -> CourseData:
+    """`d` with lane_ranges_fixed's ranges in its road points (nothing else changed); `d` itself when there is none.
+    ConvertError as lane_ranges_fixed."""
+    fixed = lane_ranges_fixed(d)
+    if not fixed:
+        return d
+    road = tuple(dataclasses.replace(r, lane_lo=fixed[k][0], lane_hi=fixed[k][1]) if k in fixed else r
+                 for k, r in enumerate(d.road))
+    return dataclasses.replace(d, road=road)
+
+
 def road_line(d: CourseData) -> tuple[C.RoadPoint, ...]:
     """The arcade's road line (record table) of `d`: per road point lane_lo, lane_hi and curve copied, each lane's
     position (x, y, -z), pitch negated, heading - 0x1fff (s16), roll and pad copied. ConvertError for a `d` that
@@ -178,16 +216,16 @@ def attributes(d: CourseData) -> bytes:
     return bytes(d.attributes)
 
 
-def checkpoint_rows(exe, n: int) -> tuple[C.Checkpoint, ...]:
-    """The rows the arcade's checkpoint table writes for Dreamcast course `n` (0-7), from `exe` (the bytes of
-    1ST_READ.BIN; its plain list, dtools.dc.exe.checkpoints): Checkpoint(index j, segment, raw 0, not the lap line),
-    in race order. `position` (0, 0, 0) and `extensions` () are placeholders: they are views of the road line and the
+def checkpoint_rows(exe, n: int, v: str = "") -> tuple[C.Checkpoint, ...]:
+    """The rows the arcade's checkpoint table writes for Dreamcast course `n` (0-7), variant `v` (default the plain
+    course; "R" its reverse, M9), from `exe` (the bytes of 1ST_READ.BIN; dtools.dc.exe.checkpoints): Checkpoint(index
+    j, segment, raw 0, not the lap line), in race order. `position` (0, 0, 0) and `extensions` () are placeholders: they are views of the road line and the
     time table, which course.checkpoint_views recomputes (and golden.check_course compares); the lap line is added
     there too. () for a course without checkpoints (n 0 and 5). ConvertError for an n that is not an integer 0-7, a
     segment past the arcade's u16 or more than course.MAX_CHECKPOINTS rows; DcError for an `exe` the reader refuses."""
     if not is_int(n) or not 0 <= n < COURSE_COUNT:
         raise ConvertError(f"checkpoint rows: course {n!r} is not a Dreamcast course 0..{COURSE_COUNT - 1}")
-    segs = _dc_checkpoints(exe, int(n))
+    segs = _dc_checkpoints(exe, int(n), v)
     if len(segs) > C.MAX_CHECKPOINTS:
         raise ConvertError(f"checkpoint rows: course {int(n)} has {len(segs)} checkpoints, more than the arcade's "
                            f"{C.MAX_CHECKPOINTS} (its u32 bit set)")

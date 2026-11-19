@@ -8,19 +8,32 @@ tools/desert_city_playtest.py `m5b_set`, adds the start words) with the release 
    tables);
 2. `build.converted_set(..., n, slot=n, scenery="model")` for each of RELEASE_CONVERTED, in that order (each step
    places at the first free bytes, so the order fixes the bytes);
+   With `direction` (v0.2), each with `road_copy=True` (build.ROAD_COPY: the road copied across cell edges, so the
+   game's culling no longer drops the road under the camera);
+2b. (M9 stage 3, `direction=True`, the default) the eight courses in reverse after them, at ids 8-15:
+   `build.converted_set(..., n, slot=n + 8, variant="R", scenery="keep")` for the arcade's three (their own
+   scenery), then `scenery="model"` for 3-7;
 3. `course.grow_rankings` (a ranking table per id);
-4. `select.patch_select(..., select.ENTRIES)`: the release row, every course under its own name (the originals' over
+4. `select.patch_select(..., select.ENTRIES, faceted_maps=direction)` (v0.2's faceted maps with the screen only;
+   without it v0.1.2's painted ones): the release row, every course under its own name (the originals' over
    their name box, select.WINDOW_NAME);
 5. `build.race_times` on each of RELEASE_TIME_IDS (v0.1.2: the converted courses' own time tables, build.RACE_TIMES;
+   with `direction`, M9 stage 4, REVERSE_TIME_IDS too: the reverses' own;
    the originals keep the arcade's), then `build.long_time` on each of `long_ids` (none by default; test-only, as
    `times=False`: the gates' sets);
-5b. `build.pit_stalls` on each of RELEASE_PIT_IDS (v0.1.2: the converted courses' own pit stalls, the Dreamcast's,
+5b. `build.pit_stalls` on each of RELEASE_PIT_IDS (and with `direction`, M9 stage 4, `pit_stalls(..., n, "R")` for
+   the reverses at ids 8-15) (v0.1.2: the converted courses' own pit stalls, the Dreamcast's,
    at the end of build.ID_DATA_FREE; before, they stopped on Beginner's and the stop ended at once); test-only
-   `pits=False` leaves them out (v0.1.1's chain);
+   `pits=False` leaves them out (v0.1.1's chain); with `direction`, then `course.patch_pit_heading` (the pit stop's
+   angle differences wrapped to 16 bits, the trigger, the stall steering and the waypoint-passed test: Dinosaur
+   Canyon's and Desert City's reverse boxes face -32768);
 6. `title.extended_title`: "Extended" in the attract logo (title.PICKED, Pascal's pick), in the free custom data run
    title.TITLE_RUN (outside build.ID_DATA_FREE, so the views below land where they land without it) and two
    repointed words;
-7. `build.viewed_set`, last (its tables are not owned spans: nothing allocates after it).
+7. `build.viewed_set` (its tables are not owned spans: nothing allocates after it), with `direction` the reverse
+   ids' too (build.REVERSE_VIEW);
+8. with `direction`, `dirscreen.patch_direction`: the Course Direction screen after Circuit Select (NORMAL or
+   REVERSE: course n or n + 8), in its own code and data areas.
 
 The packaging (Phase 12 Task 5, "What gets built" item 4; the `dtools` command, dtools/cli.py): `check_inputs` verifies
 the player's inputs (MAME 0.289's `daytona.zip` by size and CRC32, ROM_SIZES and romset.CRCS; track 3 of the US
@@ -68,10 +81,16 @@ RELEASE_CONVERTED = (3, 4, 7, 6, 5)
 Speedway, Mermaid Lake, Rin Rin Rink, Circuit Pixie (Phase 11's order, tests/test_courses_mame.py M5B_CONVERTED)."""
 RELEASE_TIME_IDS = (3, 4, 5, 6, 7)
 """The course ids whose time tables `release_set` rewrites with build.RACE_TIMES (v0.1.2): the converted courses."""
+REVERSE_TIME_IDS = tuple(range(8, 16))
+"""M9 stage 4: the reverses' own time tables (build.RACE_TIMES[8..15]), written with `direction`."""
 RELEASE_LONG_IDS = (3, 4, 5, 6, 7)
 """The course ids whose start time v0.1-v0.1.1 raised to build.LONG_TIME (the M5b playtest set's, tools/
 desert_city_playtest.py M5B_LONG_TIME_IDS): `release_set(rs, disc, RELEASE_LONG_IDS, times=False, pits=False)` is
 v0.1.1's release chain."""
+REVERSE_IDS = 8
+"""M9: each course n's reverse is at id n + REVERSE_IDS (the eight in reverse at ids 8-15)."""
+ARCADE_COURSES = 3
+"""Ids 0-2, the arcade's own courses: in reverse they keep their scenery (stage 2's "keep"); 3-7 re-mesh theirs."""
 RELEASE_PIT_IDS = (3, 4, 5, 6, 7)
 """The course ids `release_set` gives the Dreamcast's pit stalls (build.pit_stalls, v0.1.2): the converted courses."""
 
@@ -87,13 +106,15 @@ def _long_ids(long_ids) -> tuple[int, ...]:
 
 
 def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
-                *, title: bool = True, times: bool = True, pits: bool = True) -> RomSet:
+                *, title: bool = True, times: bool = True, pits: bool = True, direction: bool = True) -> RomSet:
     """The release set from the stock `rs` and the US Dreamcast `disc` (the module docstring's chain): ids 3-7
     converted (RELEASE_CONVERTED), the rankings, the select with the release row (select.ENTRIES), the converted
     courses' own time tables (build.race_times on RELEASE_TIME_IDS), the start time raised on `long_ids` (none by
     default; e.g. RELEASE_LONG_IDS), the converted courses' own pit stalls (build.pit_stalls on RELEASE_PIT_IDS), the
     Extended title (title.extended_title), then the views. Test-only: `pits=False` leaves the pit stalls out (with
-    `times=False` and RELEASE_LONG_IDS, v0.1.1's chain);
+    `times=False` and RELEASE_LONG_IDS, v0.1.1's chain); `direction=False` leaves out the reverse courses, their
+    views and the Course Direction screen (v0.1.2's chain; the gates of the courses race it: the screen moves the race
+    52 frames and changes nothing else, tests/test_dirscreen_mame.py test_race_after_screen_as_stock);
     `times=False` leaves the race times out (the converted courses keep Beginner's words, as v0.1-v0.1.1: the release
     gates' time-over frames are measured on those), `title=False` the title step (the release gates compare the
     titled set's ground log with the untitled one's, tests/test_courses_mame.py `_gate`). ReleaseError for `rs` not a
@@ -104,20 +125,31 @@ def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
     if not isinstance(disc, DcDisc):
         raise ReleaseError(f"{type(disc).__name__} is not a DcDisc")
     long_ids = _long_ids(long_ids)
-    for name, v in (("title", title), ("times", times), ("pits", pits)):
+    for name, v in (("title", title), ("times", times), ("pits", pits), ("direction", direction)):
         if not isinstance(v, bool):
             raise ReleaseError(f"{name} {v!r:.60} is not a bool")
     out = C.widen_ids(C.guard_new_ids(C.grow_ids(rs)))
     for n in RELEASE_CONVERTED:
-        out = build.converted_set(out, disc, n, slot=n, scenery="model")
-    out = select.patch_select(C.grow_rankings(out), select.ENTRIES)
-    for k in RELEASE_TIME_IDS if times else ():
+        out = build.converted_set(out, disc, n, slot=n, scenery="model", **({"road_copy": True} if direction else {}))
+    for n in range(REVERSE_IDS) if direction else ():
+        out = build.converted_set(out, disc, n, slot=n + REVERSE_IDS, variant="R",
+                                  scenery="keep" if n < ARCADE_COURSES else "model", road_copy=True)
+    out = select.patch_select(C.grow_rankings(out), select.ENTRIES, faceted_maps=direction)
+    for k in (RELEASE_TIME_IDS + (REVERSE_TIME_IDS if direction else ())) if times else ():
         out = build.race_times(out, golden.decode_course(out, k))
     for k in long_ids:
         out = build.long_time(out, golden.decode_course(out, k))
     for k in RELEASE_PIT_IDS if pits else ():
         out = build.pit_stalls(out, disc, k)
-    return build.viewed_set(_title.extended_title(out) if title else out)
+    if pits and direction:                      # M9 stage 4: the reverses' own stalls, the pit stop's angles
+        for n in range(REVERSE_IDS):
+            out = build.pit_stalls(out, disc, n, "R")
+        out = C.patch_pit_heading(out)
+    out = _title.extended_title(out) if title else out
+    if not direction:
+        return build.viewed_set(out)
+    from dtools.arcade import dirscreen
+    return dirscreen.patch_direction(build.viewed_set(out, build.REVERSE_VIEW))
 
 
 # ---- packaging (Task 5): the inputs checked, the set written ----

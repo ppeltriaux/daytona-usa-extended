@@ -197,7 +197,7 @@ def test_disc_image_extracts_the_small_tracks_from_the_archive(tmp_path, monkeyp
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_run_dc_runs_the_dc_system_with_the_image(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner, "running_mame", lambda: [])
+    monkeypatch.delenv("DAYTONA_MAME_JOBS", raising=False)
     monkeypatch.chdir(tmp_path)
     args = tmp_path / "args"
     mame = tmp_path / "fake-mame"
@@ -215,7 +215,7 @@ def test_run_dc_runs_the_dc_system_with_the_image(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_run_dc_fails_on_a_lua_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner, "running_mame", lambda: [])
+    monkeypatch.delenv("DAYTONA_MAME_JOBS", raising=False)
     mame = tmp_path / "fake-mame"
     mame.write_text("#!/bin/sh\necho '[LUA ERROR] boom'\necho 'Average speed: 100%'\n")
     mame.chmod(0o755)

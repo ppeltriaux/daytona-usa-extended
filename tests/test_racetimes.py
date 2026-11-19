@@ -325,3 +325,27 @@ def test_derive_on_measurements_from_the_spike_cutting():
     for i in same:
         same[i]["start"] += 5
     assert d == R.derive(same, originals(), LAPS, CP)
+
+
+def test_reverse_ids_derived():
+    """M9 stage 4: `derive(..., ids=CONVERTED + REVERSE)` gives ids 8-15 too, by the same rule; a course with the lap
+    line only (Three Seven Speedway reverse, 8; Circuit Pixie reverse, 13) takes id 0's factors as Circuit Pixie does
+    (LAP_LINE_SOURCE), the others the originals' means; ids 3-7 as without them."""
+    cp = {**CP, 8: 0, 9: 2, 10: 1, 11: 2, 12: 2, 13: 0, 14: 1, 15: 2}
+    laps = {i: {0: 3, 1: 2, 2: 2} for i in range(16)}
+    m = meas()
+    for i in range(8, 16):
+        sect = [900] if cp[i] == 0 else [400 + 50 * j for j in range(cp[i] + 1)]
+        m[str(i)] = {"start": 1200, "sectors": sect, "lap": sum(sect)}
+    o = originals()
+    ids = R.CONVERTED + R.REVERSE
+    assert R.REVERSE == tuple(range(8, 16))
+    f = R.factors(m, o, laps, cp, ids)
+    assert f["course"][8] == f["course"][13] == f["course"][5]
+    assert all(f["course"][i] == f["course"][3] for i in (9, 10, 11, 12, 14, 15))
+    d = R.derive(m, o, laps, cp, ids)
+    assert sorted(d) == list(ids)
+    plain = R.derive(meas(), o, LAPS, CP)
+    assert all(d[i] == plain[i] for i in R.CONVERTED)
+    for i in R.REVERSE:
+        assert len(d[i][(0, 1)]) == 1 + laps[i][0] * (cp[i] + 1)

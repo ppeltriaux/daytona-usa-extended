@@ -294,3 +294,42 @@ def test_pit_stalls_match_the_arcade(exe_blob, romset_zip):
     t = exe.decode_pit_stalls(exe_blob)
     assert len(t) == 16 and {len(g) for g in t} == {8} and {len(s) for g in t for s in g} == {7}
     assert exe.pit_stalls(exe_blob, 4)[0][0] == pytest.approx((-121.08, -46.41, 100.0), abs=0.005)
+
+
+# ---- the variant tables: grid bases, laps, car counts (M9 stage 1) ----
+
+REVERSE_GRID_BASES = (100, 984, 480, 458, 418, 123, 493, 493)
+REVERSE_LAPS = (8, 2, 4, 4, 4, 8, 6, 6)
+REVERSE_CARS = (40, 30, 20, 30, 40, 40, 40, 20)
+"""The R copies, measured 16 Nov 2026: equal to the plain ones, as are M's and MR's (all four copies of each table are
+the same eight values), so the reverse courses keep their course's grid base, laps and car count."""
+
+
+def test_variant_tables_plain_real(exe_blob):
+    from dtools.convert import build
+    assert [exe.grid_base(exe_blob, n) for n in range(8)] == list(build.GRID_BASES)
+    assert [exe.laps(exe_blob, n) for n in range(8)] == [8, 2, 4, 4, 4, 8, 6, 6]
+    assert [exe.cars(exe_blob, n) for n in range(8)] == [40, 30, 20, 30, 40, 40, 40, 20]
+
+
+def test_variant_tables_reverse_real(exe_blob):
+    """The R copies, measured and frozen (REVERSE_GRID_BASES etc.); M and MR the same (the format doc)."""
+    assert tuple(exe.grid_base(exe_blob, n, "R") for n in range(8)) == REVERSE_GRID_BASES
+    assert tuple(exe.laps(exe_blob, n, "R") for n in range(8)) == REVERSE_LAPS
+    assert tuple(exe.cars(exe_blob, n, "R") for n in range(8)) == REVERSE_CARS
+    for v in ("M", "MR"):
+        assert tuple(exe.grid_base(exe_blob, n, v) for n in range(8)) == REVERSE_GRID_BASES
+
+
+def test_variant_tables_refuse():
+    blob = b"\0" * 0x180000
+    for bad in ((8, ""), (-1, ""), (True, ""), (0, "X")):
+        with pytest.raises(DcError):
+            exe.grid_base(blob, *bad)
+    with pytest.raises(DcError, match="short"):
+        exe.laps(b"\0" * 0x100, 0)
+    b = bytearray(blob)
+    struct.pack_into("<H", b, exe.GRID_BASES_AT + 2 * (8 + 3), 77)      # entry 8 * 1 + 3: course 3, R
+    struct.pack_into("<I", b, exe.CARS_AT + 4 * (16 + 5), 33)            # entry 8 * 2 + 5: course 5, M
+    assert exe.grid_base(bytes(b), 3, "R") == 77 and exe.grid_base(bytes(b), 3) == 0
+    assert exe.cars(bytes(b), 5, "M") == 33 and exe.cars(bytes(b), 5, "R") == 0

@@ -81,7 +81,7 @@ def test_run_mame_passes_extra_args(tmp_path, monkeypatch):
     def fake_run(cmd, **kw):
         seen["cmd"] = cmd
         return Done()
-    monkeypatch.setattr(runner, "running_mame", lambda: [])
+    monkeypatch.delenv("DAYTONA_MAME_JOBS", raising=False)
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
     runner.run_mame(Path("x.lua"), 5, tmp_path, tmp_path, extra_args=["-aviwrite", "x.avi"])
     assert seen["cmd"][-2:] == ["-aviwrite", "x.avi"]

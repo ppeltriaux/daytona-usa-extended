@@ -6,6 +6,22 @@ import pytest
 from dtools import config
 
 
+def pytest_configure(config):
+    """With pytest-xdist (`-n N`), the controller extracts the .7z disc under out/dc once before the workers start:
+    workers opening it at the same moment would each extract it into the same `.partial` folder. A disc that cannot
+    be opened is left to the tests (they skip or fail as without -n)."""
+    if hasattr(config, "workerinput") or not getattr(config.option, "numprocesses", None):
+        return
+    from dtools import config as dconfig
+    from dtools.dc.disc import DcDisc
+    p = dconfig.dc_path()
+    if p is not None and p.suffix.lower() == ".7z" and p.is_file():
+        try:
+            DcDisc.open(p).close()
+        except Exception:                               # noqa: BLE001 (reported by the tests themselves)
+            pass
+
+
 def pytest_runtest_setup(item):
     """A test marked `mame` starts MAME: skipped when mame is not on PATH. One marked `custom_mame` needs the custom
     build: skipped when dtools.config.custom_mame() finds none (tools/build-mame.sh)."""

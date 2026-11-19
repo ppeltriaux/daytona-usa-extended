@@ -371,3 +371,73 @@ def test_lane_headings_are_the_cross_section_normal(disc, romset_zip):
     assert 520 < float(np.abs(_heading_residuals(road, "lane")).max()) < 530             # measured 527.0
     r = _heading_residuals(road, "cross")
     assert float(np.abs(r).max()) < 1.7 and 0.6 < float(r.mean()) < 0.9                  # measured 1.6, +0.75
+
+
+# ---- the R files' lane ranges (reverse stage 2, step 2) ----
+
+def _rdata(disc, n: int) -> CourseData:
+    from dtools.dc.data import decode_data
+    from dtools.dc.disc import course_files
+    name = course_files(n, "R", kind="data")
+    return decode_data(disc.read(name), name)
+
+
+# Road points of 1R whose used range names an empty slot (the lanes mirrored, the range not); measured 17 Nov 2026.
+FIXED_RANGES = {1: 38}
+
+
+def _centres(d: CourseData) -> list[tuple[float, float, float]]:
+    out = []
+    for r in d.road:
+        used = r.lanes[r.lane_lo:r.lane_hi + 1]
+        out.append(tuple(sum(getattr(ln, a) for ln in used) / len(used) for a in "xyz"))
+    return out
+
+
+def test_lane_ranges_fixed_on_1r(disc):
+    """1R's road points hold the plain lanes mirrored (lane j the plain lane LANES - 1 - j) but some keep the plain
+    lane_lo..lane_hi, naming an empty slot: lane_ranges_fixed names each with its mirrored range, exactly the
+    non-empty slots; none on the other fifteen files. with_lane_ranges_fixed applies them and nothing else."""
+    for n in range(8):
+        for d, v in ((_data(disc, n), ""), (_rdata(disc, n), "R")):
+            fixed = tables.lane_ranges_fixed(d)
+            if (n, v) != (1, "R"):
+                assert fixed == {} and tables.with_lane_ranges_fixed(d) is d, (n, v)
+                continue
+            assert len(fixed) == FIXED_RANGES[1]
+            out = tables.with_lane_ranges_fixed(d)
+            for k, (r, s) in enumerate(zip(d.road, out.road, strict=True)):
+                assert s.lanes == r.lanes and s.curve == r.curve
+                if k in fixed:
+                    assert (s.lane_lo, s.lane_hi) == fixed[k] == (C.LANES - 1 - r.lane_hi, C.LANES - 1 - r.lane_lo)
+                else:
+                    assert (s.lane_lo, s.lane_hi) == (r.lane_lo, r.lane_hi)
+            assert dataclasses.replace(out, road=d.road) == d
+
+
+def test_every_road_line_is_continuous(disc):
+    """All sixteen road lines, the lane ranges fixed: no step between consecutive road centres (the lap line too)
+    passes 20 units."""
+    for n in range(8):
+        for d in (_data(disc, n), _rdata(disc, n)):
+            c = _centres(tables.with_lane_ranges_fixed(d))
+            worst = max(math.dist(c[k - 1], c[k]) for k in range(len(c)))
+            assert worst < 20, (n, worst)
+
+
+def test_lane_range_repair_refuses_a_non_mirror():
+    """A used range naming an empty slot whose mirror is not exactly the non-empty slots is refused, never guessed;
+    a range with no empty slot is left alone."""
+    d = make_data()
+    empty = Lane(0.0, 0.0, -0.0, 0, 0x1FFF, 0, 0)
+    r = d.road[2]
+    lanes = (empty,) + r.lanes[1:]                                  # slot 0 empty, range 0..6: mirror 1..7 exact
+    good = dataclasses.replace(d, road=d.road[:2] + (dataclasses.replace(r, lane_lo=0, lane_hi=6, lanes=lanes),)
+                               + d.road[3:])
+    assert tables.lane_ranges_fixed(good) == {2: (1, 7)}
+    lanes = (empty,) + r.lanes[1:6] + (empty, r.lanes[7])           # slots 0 and 6 empty: no mirror is exact
+    bad = dataclasses.replace(d, road=d.road[:2] + (dataclasses.replace(r, lane_lo=0, lane_hi=6, lanes=lanes),)
+                              + d.road[3:])
+    with pytest.raises(ConvertError, match=r"road point 2: lanes 0\.\.6 name an empty slot"):
+        tables.lane_ranges_fixed(bad)
+    assert tables.lane_ranges_fixed(d) == {}

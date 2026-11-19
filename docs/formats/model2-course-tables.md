@@ -164,7 +164,7 @@ id: "A mirror tests as its original"):
 | `FLOATS_231C44` | `0x231c44` | 4 x 4 | `0xd47c` | `0x30006a0` | 0xd478 ld [(id & 3)*4] -> +0x20 (mask widened) |
 | `FLOATS_231C54` | `0x231c54` | 4 x 4 | `0xd4a4` | `0x30006e0` | 0xd4a0 ld [(id & 3)*4] (mask widened) |
 | `FLAGS_23329C` | `0x23329c` | 4 x 4 | `0x195d4`, `0x19708` | `0x3000720` | 0x195d0, 0x19704 ld [(id & 3)*4] (masks widened) |
-| `TABLES_2332AC` | `0x2332ac` | 4 x 4 | `0x19880` | `0x3000760` | 0x1987c ld [id*4] |
+| `TABLES_2332AC` | `0x2332ac` | 4 x 4 | `0x19880` | `0x3000760` | 0x1987c ld [id*4]: per lap still to run (0x5010ec less the player's lap + 1, clamped 0-15) a list of 16-byte records (segment, a value, a handler, a pad): 0x19868 fires the next record when the player's segment reaches its segment (the handler called, or the value stored at 0x501a02), so segment-keyed; not remapped for the reverse ids (M9 stage 2, step 2) |
 | `TABLES_236F58` | `0x236f58` | 4 x 4 | `0x1c4f4` | `0x30007a0` | 0x1c4f0 ld [id*4]: per car ident & 7, 16 bytes |
 | `TABLES_2370E8` | `0x2370e8` | 4 x 4 | `0x1c534` | `0x30007e0` | 0x1c530 ld [id*4]: per car ident, 32 bytes |
 | `TABLES_232CB0` | `0x232cb0` | 4 x 4 | `0x16bec` | `0x3000820` | 0x16be8 ld [id*4] (r4 = the id from 0x16b94) |
@@ -360,6 +360,10 @@ a caller that takes the partial result knows what is missing.
    point's cell corner, each with a 25-bit mask of the cells it opens. A point whose offset, rotated by 45 degrees
    minus the heading (TGP functions `0x1d`/`0x1e` at `0x17918`), has both coordinates >= 0, i.e. lies in the
    90-degree wedge ahead, ORs its mask in. The centre cell is always visible.
+   (v0.2, measured on the converted courses: where the road crosses a cell edge at about 45 degrees, the quadrant's
+   wedge can drop the row of cells the camera, trailing the car, still sees, for a few frames; the road there is not
+   drawn and the backdrop or the ground under it shows. `build.ROAD_COPY` files the road's near-flat polygons in the
+   neighbouring cells too; docs/follow-ups/v0.2.md, "The road holes".)
 4. Visible cells go to the bit set `0x501520` and the list at `0x5016c0` (count byte, then cell bytes); the first
    10 cells of the order also to the "near" sets `0x501500` / `0x501540` and the list `0x501600`.
 5. `0x17a80` draws, for each cell of `0x5016c0`, the cell's object list (`0x501420[cell]`); actors test their own
@@ -774,6 +778,19 @@ aimed at waypoints far behind the car and ended 7 frames after the box. The Drea
 eight courses (`dc.exe.pit_stalls`; "Executable tables" in docs/formats/dreamcast-disc.md); `build.pit_stalls` writes
 them for ids 3-7 (`release.RELEASE_PIT_IDS`).
 
+**The angle arithmetic (M9 stage 4).** The trigger's window (`0xdfd0`-`0xdffb`), the stop's steering (`0xe79c`: the
+turn to the waypoint, its angle less the car's yaw, held to -0x80..0x80 and added to the yaw) and its waypoint-passed
+test (`0xe7fc`: the waypoint's angle less the box's direction, plus 0x3fff, outside 0..0x7fff) each subtract two
+angles loaded sign-extended and compare the 32-bit result: none wraps. A box facing near +-0x8000 (Dinosaur Canyon and
+Desert City in reverse, -32768) starts the stop only for a yaw on one side of the wrap, and a waypoint dead ahead on
+the other side counts as passed at once. `course.patch_pit_heading` keeps each difference's low 16 bits (shlo 16,
+then shro 16 or shri 16; MAME's i960 has no `extract`), each site in its stock length (the compare-and-branch
+instructions free the room); `release_set` applies it with the reverses. The arcade's boxes face -16383, -4, 21587
+and the like: the trigger's narrow window never meets the wrap on them. The passed test's half-turn window and the
+steering's difference do on a box beyond 0x4000: on National Park Speedway (21587, in practice the only course
+affected) stock counted a waypoint about 61-90 degrees to one side of the box's direction (angles -32768 to -27565)
+as passed and turned the long way towards it; the patch gives the quarter-turn answer and the short turn.
+
 `pit` raises `CourseError` when there is not exactly one box polygon or the pit polygons' segments are not one run of
 the loop. `encode_pit` refuses a polygon outside the steps, listed twice or flagged `STEP_ROAD`, another polygon already
 flagged as pit, and a pit whose entry, exit or box segment differs from what its polygons give; `encode_step_table` a
@@ -1079,7 +1096,7 @@ Mirror mode is dropped (Pascal, 2026-11-11), so the shipped select is one row of
 frozen `M4A_ENTRIES`, `M4B_ENTRIES`, `M5A_ENTRIES`, writes the bytes it wrote before: the sixteen-entry select above).
 A row of 8: course ids a permutation of 0-7, no mirror entry (`check_entries`). The shipped chain builds no mirror
 (grow, guard, widen, convert 3, 4 and 7, `course.grow_rankings`, select): ids 8-15 hold no course and no entry
-reaches them (free for reverse, M9). Since Phase 11 Tasks 3-4 the chain converts 3, 4, 7, 6 and 5, all eight entries
+reaches them (free for reverse, M9: since M9 stage 3 the release chain builds the reverses there, reached by the Course Direction screen below). Since Phase 11 Tasks 3-4 the chain converts 3, 4, 7, 6 and 5, all eight entries
 are live, and `build.viewed_set` (the per-course views, below) is its last step. Evidence:
 `docs/spike/2026-11-courses-4-7.md`, "The row of eight".
 
@@ -1206,6 +1223,34 @@ last of the custom textures area, lists (one entry: panel 0's map placement with
 at the last of `tgp.DATA_FREE`; `select.map_spans` owns all three (headers only in the custom textures area). On the
 release set the maps are 251-443 drawn polygons (282-545 records); with three on screen the select draws at most
 1,079 polygons a frame (a race up to 3,488) and its frame counters keep step with the M5b set's.
+
+### The Course Direction screen (M9 stage 3, patched sets)
+
+`dirscreen.patch_direction` (after `patch_select` and `widen_ids`; the release chain's last step) adds select states
+17-19 between Circuit Select and Mission Select. Code at 0x1ef00 (1,216 bytes, then the two tables of 20 words: the
+stock 17 handlers but state 7's, then 17-19); the single and linked dispatchers' table words (0x225480, 0x2254b8)
+repointed. Data from 0x03fc0000 (DATA_SPAN 0x40000; 122,368 bytes on the release set).
+
+| State | Handler | Does |
+|---|---|---|
+| 7 | `dir7` | the stock 0x225ab8, then 17 instead of 8 when the course id is below 8 and no other cabinet's vote |
+| 17 | `dir17` | saves Mission Select's timer; uploads and blits the art, NORMAL, not armed, the timer at 640 (one frame; it runs over into the next) |
+| 18 | `dir18` | the two maps, the timer (0x226d40), the wheel (D6 rule), the band / frame / captions on a change, the gas from the timer's 0x270 or the timeout |
+| 19 | `dir19` | the maps; the 32-frame hold (0x56(g13)); REVERSE: id + 8 and widen_ids' update; Mission Select's layers (0x225ad0), its timer restored, state 8 |
+
+RAM 0x501b26-0x501b37: the choice (+0), armed (+1), the entry's directory record (u32 +2), the band shown (+6), the
+map object list (u32 +10), the arrow variant (u32 +14), Mission Select's timer as state 7 left it (u32 +18: 320 on
+the linked path MAME's TWIN cabinet takes, 640 on the single-cabinet one; restored by state 19).
+
+Chars 0x3d00-0x3fff (unused by the boot and the select; 0x3d00-0x3dfc are also the course backdrop's last chars, `0x1de40`'s
+lists to 0x3a00-0x3d8e and 0x3b00-0x3dfc, uploaded again by every course load before the race: Mission Select keeps
+the last backdrop's tiles on layer 2 rows 49-54 only, below the 48 visible rows): the banner from 0x3d00 (150 chars, blocks 0x7a-0x7b), the
+entry's panel from 0x3e00 (at most 120, blocks 0x7c-0x7d), the NORMAL side from 0x3f00 and the REVERSE side from
+0x3f80 (85 each: caption, arrow, frame; one palette per block: pen 1 the arrow, 2 black, 3 the frame's yellow, 4 the
+caption, swapped for the chosen side). The panels: 24 variants (8 entries x 3 game modes), a directory of 20-byte
+records (char list, palette list, panel map, the normal and the REVERSE band maps); two arrow variants (NORMAL
+clockwise or not), each a char list and the four area maps [choice][side]; per entry its map object list and its
+arrow variant.
 
 ## Backdrop
 

@@ -93,7 +93,7 @@ from dtools.arcade import tgp
 from dtools.arcade.errors import DecodeError
 from dtools.arcade.romset import COPRO_SIZE, CUSTOM_FREE, RomSet, reserved
 from dtools.arcade.tablebase import DATA_BASE, PROGRAM_WINDOW, _f32, is_int, is_number
-from dtools.convert import ConvertError, ground, model, tables, textures
+from dtools.convert import ConvertError, ground, model, reverse, tables, textures
 from dtools.dc import pol, tex
 from dtools.dc.data import CourseData, decode_data, road_cells
 from dtools.dc.disc import COURSE_COUNT, DcDisc, course_files
@@ -243,7 +243,12 @@ Task 3), Mermaid Lake (n 7, Phase 10 Task 4), Rin Rin Rink (n 6, Phase 11 Task 3
 each at the first bytes free: the course converted later lands after the earlier one), so nothing per id is added to
 NEW_ID_RUNS, ID_DATA_ORDER or ID_FIELDS; the program sites that test the id already send ids 4-15 down the path id 3
 takes (course.ID3_LITERALS, course.widen_ids)."""
-SLOTS = (0,) + CONVERTED_IDS
+REVERSE_IDS = tuple(range(8, 16))
+"""The reverse course ids (M9, docs/superpowers/specs/2026-11-16-reverse-courses-design.md): Dreamcast course n driven
+the other way, converted from its R files (`variant="R"`), is id n + 8."""
+VARIANTS = ("", "R")
+"""The Dreamcast variants a conversion reads: the plain course, or its reverse (into REVERSE_IDS)."""
+SLOTS = (0,) + CONVERTED_IDS + REVERSE_IDS
 _ID_DATA_AT = (C.SRAM_SINK + C.SRAM_SINK_SIZE - DATA_BASE + 0xFF) & ~0xFF
 ID_DATA_FREE = (_ID_DATA_AT,
                 next(lo + n for lo, n in CUSTOM_FREE["data"] if lo <= _ID_DATA_AT < lo + n) - _ID_DATA_AT)
@@ -743,10 +748,44 @@ backdrop showed through. 32 (Pascal took the recommendation, 15 Nov 2026): 420 o
 start straight's long strips 82-146 units). The cut alone put the lap's maximum at 3,985 drawn at frame 1715 (64: 3,963),
 over the 3,951 target, so CS7 also takes QUAD's tolerances (as 4-6): 3,790 (tests/test_courses_mame.py LAKE_MAX). A
 course not named is not cut (its bytes unchanged)."""
+ROAD_COPY: dict[int, tuple[float, float]] = {n: (16.0, 10.0) for n in (3, 4, 5, 6, 7)}
+"""Per course n (its NORMAL conversion and its reverse alike), (margin, band) for `model.convert_model`'s `road_copy`
+(v0.2; Pascal's drive of Rin Rin Rink: the road vanished for a moment at three spots a lap): each near-flat scenery
+polygon within `band` units of the road line is filed also in each neighbouring cell it comes within `margin` units of,
+so the road under the camera draws when the game's culling has dropped the cell it lies in (docs/follow-ups/
+v0.2.md). Measured with dtools/mame/lua/holes_log.lua on the autopilot's 200 s race: Rin Rin Rink's hole runs 14 -> 0
+on the road (2 left where the car is off the road in the grass) and its reverse's 3 -> 0, the polygon count's peak
+4,933 -> 4,983 and 4,843 -> 4,883, under OBC's 5,000 (a band of 20 units peaked at 5,102; cutting on the cell grid
+first, CELL_CUT 0, cost some 600 more). On all five (and their reverses), the hole runs on the road at (16, 10):
+Desert City 4 -> 0 (reverse 9 -> 0), National Park Speedway 8 -> 4 (its other four a gap in the ground beside the road,
+not the culling: a wider band, or CELL_CUT 32, changes nothing; reverse 4 -> 0), Circuit Pixie 10 -> 4 (the four with the
+car off the road on its infield; reverse 6 -> 3, the same), Mermaid Lake 3 -> 0 (reverse 2 -> 0). A course not named
+copies nothing (its bytes unchanged); and only `converted_set(..., road_copy=True)` copies (release.release_set with
+`direction`, v0.2's chain), so every earlier set and pin, and the release chain without the screen (v0.1.2), hold."""
 REMESH: dict[int, float] = {4: 0.1, 6: 0.1, 5: 0.1}
 """Per course n, the bound (world units) `model.remesh` re-meshes its kept model to before thinning (Phase 10 Task 3,
 lever 3: 0.1, set before measuring; Rin Rin Rink and Circuit Pixie the same, Phase 11 Tasks 3 and 4). A course not
 named is not re-meshed."""
+
+REVERSE_THIN: dict[int, dict[int, float]] = {6: THIN[6]}
+REVERSE_QUAD: dict[int, tuple[float, float]] = {3: (10.0, 0.125), 4: (10.0, 0.125), 5: (10.0, 0.125), 6: (10.0, 0.125),
+                                                7: (10.0, 0.125)}
+REVERSE_REMESH: dict[int, float] = {3: 0.4, 4: 0.1, 5: 0.1, 6: 0.4}
+REVERSE_NAMED_PROPS: dict[int, tuple[int, ...]] = {n: NAMED_PROPS[n] for n in (4, 5, 6, 7)}
+"""Per course n, the budget settings of its reverse model (CSnR_POL.BIN, `converted_set(..., variant="R")`) in place of
+THIN, QUAD, REMESH and NAMED_PROPS (M9 stage 1): the R model has the plain one's object count but other detail (Desert
+City: 20 of 68 objects differ in mesh count, among them THIN[3]'s), so the plain model's per-object fractions and props
+do not carry over; CELL_CUT (geometric) does. Desert City's reverse unreduced drew 4,507 at frame 1771 (the start),
+556 over BAR - THIN_MARGIN: the levers in the project's order, quad merge and re-mesh first (docs/spike/
+2026-11-reverse.md, "Desert City in reverse").
+
+Courses 4-7 (M9 stage 2, step 3, measured in MAME 17 Nov 2026): their R models hold the plain models' objects at the
+same indices (same object count; NAMED_PROPS' and THIN[6]'s objects identical, or the same object with its texture
+indices one off where the R texture table is renumbered: National Park's object 3, Rin Rin Rink's 136), so their props
+and THIN carry over; Circuit Pixie's and Rin Rin Rink's animations drawn all at once filled the polygon cap without
+them (4,683 / 4,817 drawn, counts 5,659 / 5,876). With the plain QUAD and REMESH and the props the laps drew 3,811
+(count 4,406), 3,567 (4,312, VIEW_12), 3,805 (4,725: the count over, VIEW_12) and 3,894 (4,579); Rin Rin Rink's
+reverse then takes REMESH 0.4: 3,660 (4,564). Circuit Pixie's reverse fits a larger view (REVERSE_VIEW)."""
 
 VIEW_12 = frozenset({(0, -2), (0, -1), (0, 0), (0, 1), (0, 2), (1, -2), (1, -1), (1, 0), (1, 1), (1, 2), (2, -2),
                      (2, 2)})
@@ -770,6 +809,33 @@ mask cut to those cells (`view_tables`), read through course.view_ids (`viewed_s
 
 A course not named keeps the shared view, and a set without a VIEW course is built without view_ids (its bytes
 unchanged)."""
+
+
+VIEW_8 = frozenset({(0, -2), (0, -1), (0, 0), (0, 1), (0, 2), (1, -1), (1, 0), (1, 1)})
+"""8 cells: the reference cell's row (5) and the middle three of the next."""
+VIEW_9 = VIEW_8 | {(2, 0)}
+"""9 cells: VIEW_8 and the far row's middle cell."""
+VIEW_13 = VIEW_12 | {(2, 0)}
+"""13 cells: VIEW_12 and the far row's middle cell."""
+REVERSE_VIEW: dict[int, frozenset] = {**VIEW, 9: VIEW_9, 10: VIEW_9, 13: VIEW_13, 14: VIEW_12}
+"""VIEW with the reverse ids' own views (M9 stage 2, step 2; the reverse chain's viewed_set, not the release's). Sea-Side
+Street Galaxy and Dinosaur Canyon in reverse (ids 9, 10), under the arcade's scenery, go past BAR and hit the cap driven
+backwards; Pascal's rule for them is BAR and no cap hit (17 Nov 2026), per-id views first, and as on Rin Rin Rink the
+largest shape whose lap fits: VIEW_9 on both (the only symmetric shape between VIEW_8 and rows 0-1). Measured in MAME over the autopilot's lap (drawn maximum, frames over BAR, cap hits):
+
+| view | id 9 | id 10 |
+|---|---|---|
+| all 15 cells | 4,535+ (the lap not measured to its end), 212, 134 | 4,753, 410, 264 |
+| VIEW_12 | 4,817, 73, 70 | 4,657, 39, 22 |
+| rows 0-1 (10 cells) | 4,567, 40, 25 | 4,262, 11, 0 |
+| VIEW_9 | 4,102, 0, 0 | 4,059, 0, 0 |
+| VIEW_8 | 4,003, 0, 0 | 3,869, 0, 0 |
+
+Circuit Pixie and Rin Rin Rink in reverse (ids 13, 14; the converted courses' rule: drawn at most BAR - THIN_MARGIN
+3,951 and the count at most 4,700), with REVERSE_NAMED_PROPS, REVERSE_THIN and REVERSE_REMESH, drawn max / count max:
+all 15 cells 4,098 / 4,918 and 4,330 / 5,218 (235 cap hits); VIEW_12 plus the far row's two flanking cells (14)
+3,916 / 4,702 (the count 2 over) and 4,079 / 5,057; VIEW_13 3,749 / 4,528 and 4,059 / 4,837; VIEW_12 3,567 / 4,312
+and 3,660 / 4,564. The largest that fits: VIEW_13 on id 13, VIEW_12 on id 14 (the plain course's)."""
 
 
 def view_tables(rs: RomSet, cells) -> bytes:
@@ -1209,7 +1275,7 @@ def _clamped(uvs, modes) -> tuple:
 
 def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep: dict | None = None, *,
                   slot: int = 0, quad: tuple[float, float] | None = None, remesh: float | None = None,
-                  props=(), cell_cut: float | None = None) -> Scenery:
+                  props=(), cell_cut: float | None = None, road_copy: tuple[float, float] | None = None) -> Scenery:
     """A Dreamcast course model (`m`, a `CS{n}_POL.BIN`; `tex_blob` its `CS{n}_TEX.BIN`) as the Scenery of a converted
     course in slot `slot` of `rs` (0, Beginner's, on the original set; NEW_ID on a grown set: the colour tables, which
     pick the hues, are the original's on both). Phase 7 Task 5's rulings
@@ -1221,7 +1287,8 @@ def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep
       names thinned to their fractions, the road protected (`scenery_model`, Task 7; converted_set passes THIN's),
       after a re-mesh to `remesh` world units where given (`model.remesh`; converted_set passes REMESH's, Phase 10
       Task 3); the rest converted (`model.convert_model`: one object per cell, more past model.MAX_RECORDS; `quad`
-      its quad tolerances where given, converted_set passing QUAD's; `cell_cut` its cell-grid cut where given,
+      its quad tolerances where given, converted_set passing QUAD's; `road_copy` (margin, band) its road copied across
+      cell edges where given (converted_set passing ROAD_COPY's; the road line's centres from `d`); `cell_cut` its cell-grid cut where given,
       converted_set passing CELL_CUT's) and textured
       (`textures.course_textures`, every texture packed in sheet 0, the slot's course block); each record's distance
       coefficient fitted to its converted texture's size (`_fit_coefficients`);
@@ -1264,8 +1331,9 @@ def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep
     base_kept, kept = _scenery_models(m, tex_blob, d, keep, remesh, props)
     where, meshes = model.triangle_meshes(kept), _meshes(kept)
     base, indices = textures.course_textures(m, tex_blob, rs)
+    copy = None if road_copy is None else (road_centres(tables.road_line(d), "road copy"), *road_copy)
     pieces, _ = _fit_coefficients(model.convert_model(kept, quad, {t: (h.width, h.height) for t, h in base.items()},
-                                                      cell_cut),
+                                                      cell_cut, copy),
                                   [(t.width, t.height) for t in m.textures], base)
     tables_ = T.colour_tables(rs)
     face = mesh_colours(m, base_kept, kept)
@@ -1378,11 +1446,11 @@ def _course_n(n) -> int:
 
 
 def _slot(slot, rs: RomSet | None = None) -> int:
-    """`slot` as an int: 0 (Beginner's) or one of CONVERTED_IDS (a new id: with `rs`, on a grown set with the new
-    ids' guards: course.grow_ids, course.guard_new_ids). ConvertError otherwise."""
+    """`slot` as an int: 0 (Beginner's), one of CONVERTED_IDS or one of REVERSE_IDS (a new id: with `rs`, on a grown
+    set with the new ids' guards: course.grow_ids, course.guard_new_ids). ConvertError otherwise."""
     if not is_int(slot) or slot not in SLOTS:
         raise ConvertError(f"slot {slot!r}: a conversion fills Beginner's slot (0) or a new id "
-                           f"{', '.join(map(str, CONVERTED_IDS))}")
+                           f"{', '.join(map(str, CONVERTED_IDS + REVERSE_IDS))}")
     slot = int(slot)
     try:
         if slot and rs is not None and not (C.grown(rs) and C.guarded(rs)):
@@ -1391,6 +1459,74 @@ def _slot(slot, rs: RomSet | None = None) -> int:
     except DecodeError as e:
         raise ConvertError(f"slot {slot}: {e}") from e
     return slot
+
+
+def _variant(variant, n: int, slot: int, scenery: str = "keep") -> str:
+    """`variant` checked against course `n`, `slot` and `scenery`: "" fills slot 0 or a CONVERTED_IDS id, never a
+    reverse id; "R" fills exactly the reverse id n + 8, for a converted course n 3-7, or for the arcade's three
+    (n 0-2) with scenery "keep" only (their own scenery shared: `_reverse_alias`). ConvertError otherwise."""
+    if not isinstance(variant, str) or variant not in VARIANTS:
+        raise ConvertError(f"variant {variant!r:.30} is not one of {VARIANTS}")
+    if variant == "R":
+        if n < 3 and scenery != "keep":
+            raise ConvertError(f"course {n} in reverse keeps the arcade's scenery (scenery='keep'), not "
+                               f"{scenery!r:.30}")
+        if slot != n + 8:
+            raise ConvertError(f"slot {slot}: course {n} in reverse fills its reverse id {n + 8}")
+    elif slot in REVERSE_IDS:
+        raise ConvertError(f"slot {slot}: a reverse id takes a course's R files (variant='R')")
+    return variant
+
+
+def _reverse_alias(rs: RomSet, o: int, k: int) -> dict[tuple[str, int], bytes]:
+    """The patches that make id `k` (a reverse id 8-10) share the arcade course `o`'s record, scenery and per-id
+    arrays by pointer, zero bytes (mirror._alias: every per-id array entry but COURSE_POINTERS and the unshared
+    SRAM and select words, TGP slot k, the tune), the culling walk `o`'s own (VISIT_IDS[k] = o, the widened default
+    k & 7: the same cells, unlike a mirror's). The race tables come after (converted_set)."""
+    from dtools.arcade import mirror
+    out = mirror._alias(rs, o, k)
+    out[C.rom_word_at(C.VISIT_IDS + k)] = bytes([o])
+    return out
+
+
+def _reverse_tables(rs: RomSet, n: int, k: int, offset: int, L: int, tunnel: bool) -> RomSet:
+    """`rs` with reverse id `k`'s own copies of arcade course `n`'s segment-keyed tables, on the reverse road
+    (`reverse`; `offset` its point_offset, L its road points): the progress masks when `n` has records (Advanced),
+    the tunnel light record's tables when the reverse road has the tunnel bit (`tunnel`: Expert's segment flags,
+    Advanced's step flags); each written into the new ids' data run (ID_DATA_FREE) and named by id k's own entry.
+    Without them id k keeps id n's entry (`_reverse_alias`). ConvertError as reverse's and for no room."""
+    from dtools.arcade import mirror
+    arrays = C.id_tables(rs)
+    patches: dict[tuple[str, int], bytes] = {}
+    blobs: list[tuple[int, bytes]] = []
+
+    def place(blob: bytes, what: str) -> int:
+        off = _first_fit(rs, "data", ID_DATA_FREE, len(blob), f"course {k}: {what}",
+                         busy=[("data", o, len(b)) for o, b in blobs])
+        blobs.append((off, blob))
+        return DATA_BASE + off
+
+    masks = mirror.mask_records(rs, struct.unpack("<I", rs.read_i960(C.id_entry(arrays, "PROGRESS_MASKS", n), 4))[0])
+    if masks:
+        at = place(reverse.reversed_masks(masks, offset, L), "progress masks")
+        patches[C.rom_word_at(C.id_entry(arrays, "PROGRESS_MASKS", k))] = struct.pack("<I", at)
+    if tunnel:
+        count = rs.read_i960(C.id_entry(arrays, "TUNNEL_BYTES", n), 1)[0]
+        starts, ends, rng, mask, positions = struct.unpack("<5I", rs.read_i960(C.id_entry(arrays, "TUNNEL_LIGHTS", n),
+                                                                               20))
+        bits = struct.unpack("<I", rs.read_i960(mask, 4))[0]
+        tables_ = reverse.reversed_tunnel(
+            struct.unpack(f"<{count + 1}H", rs.read_i960(starts, 2 * count + 2)),
+            struct.unpack(f"<{count + 1}H", rs.read_i960(ends, 2 * count + 2)),
+            struct.unpack("<2H", rs.read_i960(rng, 4)), bits,
+            {z: rs.read_i960(positions + 12 * z, 12) for z in range(count + 1) if bits >> z & 1}, offset, L)
+        names = ("tunnel zone starts", "tunnel zone ends", "tunnel range", "tunnel zone mask", "tunnel light positions")
+        words = [place(b, w) if count or w in ("tunnel range", "tunnel zone mask") else a
+                 for b, w, a in zip(tables_, names, (starts, ends, rng, mask, positions))]
+        patches[C.rom_word_at(C.id_entry(arrays, "TUNNEL_LIGHTS", k))] = struct.pack("<5I", *words)
+    for off, blob in blobs:
+        rs = _write_free(rs, "data", off, blob)
+    return rs.with_patches(patches) if patches else rs
 
 
 def _romset(rs) -> RomSet:
@@ -1969,7 +2105,8 @@ def _sizes(step_n, steps, road, lines, rows, flags) -> dict[str, int]:
 
 
 def converted_course(rs: RomSet, d: CourseData, exe, n: int, *, slot: int = 0, scenery: str = "keep",
-                     layout: Layout | None = None, scenery_data: Scenery | None = None) -> golden.Course:
+                     layout: Layout | None = None, scenery_data: Scenery | None = None,
+                     variant: str = "", plain: CourseData | None = None) -> golden.Course:
     """Dreamcast course `n` (0-7; its data `d` and `exe`, the bytes of 1ST_READ.BIN) as a golden.Course in arcade
     slot `slot` of `rs`: the slot's decoded Course with every race table replaced together (module docstring) and
     each placed in the free runs from `layout` (default: each run's first bytes that are free in `rs` and take the
@@ -2027,10 +2164,12 @@ def converted_course(rs: RomSet, d: CourseData, exe, n: int, *, slot: int = 0, s
     scenery_data was made from a model not lifted by the same amount (Scenery.lift), a `d` not shifted by SHIFT's
     amount for the course (`_check_shifted`: 0 for a course SHIFT does not name) or a scenery_data made from a model
     not shifted by it (Scenery.shift), or a slot the set cannot decode; DcError for an `exe` the Dreamcast reader
-    refuses."""
+    refuses. `plain` (a reverse's plain course data, lifted and shifted as `d`: converted_set passes it for variant
+    "R") lends the ground a cell neither repair makes convex (ground.convert_ground's plain=: 4R's cell 1765)."""
     rs = _romset(rs)
     n = _course_n(n)
     slot = _slot(slot, rs)
+    variant = _variant(variant, n, slot, scenery)
     if not isinstance(scenery, str) or scenery not in SCENERY:
         raise ConvertError(f"scenery {scenery!r:.60} is not one of {SCENERY}")
     if slot and scenery == "empty":
@@ -2056,8 +2195,8 @@ def converted_course(rs: RomSet, d: CourseData, exe, n: int, *, slot: int = 0, s
                            "converted_set does)")
     step_n, steps = tables.steps(d)
     flags = tables.segment_flags(d)
-    rows = tables.checkpoint_rows(exe, n)
-    g = ground.convert_ground(d, slot)
+    rows = tables.checkpoint_rows(exe, n, variant)
+    g = ground.convert_ground(d, slot, plain=plain)          # plain: a reverse's lender (4R's cell 1765)
     outline = hud_outline(road) if scenery != "keep" else None
     try:
         base = golden.decode_course(rs, slot)
@@ -2108,7 +2247,7 @@ def converted_course(rs: RomSet, d: CourseData, exe, n: int, *, slot: int = 0, s
     else:
         time_tables = {key: (ptr, table, read[key]) for key, (ptr, table, _) in base.time_tables.items()}
     mode = (C.DEFAULT_MODE, C.DEFAULT_DIFFICULTY)
-    grid_base = (base.grid_base[0], GRID_BASES[n])
+    grid_base = (base.grid_base[0], GRID_BASES[n] if variant == "" else dc_exe.grid_base(exe, n, variant))
     rolling_start = (base.rolling_start[0], ROLLING_STARTS[n])
     try:
         checkpoints = tuple(C.checkpoint_views([(r.segment, r.raw) for r in rows], list(road), time_tables[mode][2],
@@ -2794,7 +2933,8 @@ def _time_levels(c: golden.Course) -> dict[tuple[str, int], bytes]:
 
 
 def converted_set(rs: RomSet, disc: DcDisc, n: int, *, slot: int = 0, scenery: str = "keep",
-                  layout: Layout | None = None, scenery_data: Scenery | None = None) -> RomSet:
+                  layout: Layout | None = None, scenery_data: Scenery | None = None, variant: str = "",
+                  road_copy: bool = False) -> RomSet:
     """`rs` with Dreamcast course `n` of `disc` (its CS_DATAn.BIN and 1ST_READ.BIN) converted into slot `slot`:
     `encode(rs, converted_course(rs, d, exe, n, ...), fields)`, `fields` RACE_FIELDS (+ SCENERY_FIELDS for
     `scenery="empty"`, + MODEL_FIELDS for `scenery="model"`: the set then has course.LIBRARY_BOUND_PATCH, applied
@@ -2804,30 +2944,55 @@ def converted_set(rs: RomSet, disc: DcDisc, n: int, *, slot: int = 0, scenery: s
     `lifted_data` and `lifted_model`, Phase 10 Task 4), a course SHIFT names shifted in x (`shifted_data` and
     `shifted_model`, Phase 11 Task 3; after the lift) (`rs` should be the original
     set, never an earlier conversion's output; for a new id the grown, guarded set, `model_scenery(..., slot=slot)`
-    and fields + ID_FIELDS). ConvertError as those and for a `disc` that is not a DcDisc; DcError from the disc's
-    readers passes through."""
+    and fields + ID_FIELDS). `variant="R"` (M9) converts the course's reverse into its reverse id n + 8 (`_variant`):
+    its CSDATnR.BIN, CSnR_POL.BIN and CSnR_TEX.BIN, its R checkpoints and grid base, the same LIFT, SHIFT and budget
+    settings as the plain course. ConvertError as those and for a `disc` that is not a DcDisc; DcError from the
+    disc's readers passes through.
+    `road_copy` (v0.2; release.release_set passes True with `direction`): a `scenery="model"` conversion copies its road
+    across cell edges (model_scenery's `road_copy`, build.ROAD_COPY's setting for course n); False (the default)
+    copies nothing, as every set before v0.2 was built."""
     rs = _romset(rs)
     n = _course_n(n)
     slot = _slot(slot, rs)
+    variant = _variant(variant, n, slot, scenery)
     if not isinstance(disc, DcDisc):
         raise ConvertError(f"{type(disc).__name__} is not a DcDisc")
-    data_name = course_files(n, kind="data")
-    d = decode_data(disc.read(data_name), data_name)
+    if variant == "R" and n < 3:
+        rs = rs.with_patches(_reverse_alias(rs, n, slot))
+    data_name = course_files(n, variant, kind="data")
+    d = tables.with_lane_ranges_fixed(decode_data(disc.read(data_name), data_name))     # 1R only (none elsewhere)
+    plain = None                    # a reverse's plain course data, lifted and shifted as d (its ground's lender)
+    if variant == "R":
+        plain_name = course_files(n, kind="data")
+        plain = tables.with_lane_ranges_fixed(decode_data(disc.read(plain_name), plain_name))
     if n in LIFT:
         d = lifted_data(d, LIFT[n])
+        plain = plain and lifted_data(plain, LIFT[n])
     if n in SHIFT:
         d = shifted_data(d, SHIFT[n])
+        plain = plain and shifted_data(plain, SHIFT[n])
     exe = disc.read(EXE_NAME)
     if scenery == "model" and scenery_data is None:
-        mn, tn = course_files(n, kind="model"), course_files(n, kind="textures")
+        thin, quad, remesh, props = ((THIN.get(n), QUAD.get(n), REMESH.get(n), NAMED_PROPS.get(n, ())) if variant == ""
+                                     else (REVERSE_THIN.get(n), REVERSE_QUAD.get(n), REVERSE_REMESH.get(n),
+                                           REVERSE_NAMED_PROPS.get(n, ())))
+        mn, tn = course_files(n, variant, kind="model"), course_files(n, variant, kind="textures")
         m = pol.decode_pol(disc.read(mn), mn)
         if n in LIFT:
             m = lifted_model(m, LIFT[n])
         if n in SHIFT:
             m = shifted_model(m, SHIFT[n])
-        scenery_data = model_scenery(rs, d, m, disc.read(tn), THIN.get(n), slot=slot, quad=QUAD.get(n),
-                                     remesh=REMESH.get(n), props=NAMED_PROPS.get(n, ()), cell_cut=CELL_CUT.get(n))
-    c = converted_course(rs, d, exe, n, slot=slot, scenery=scenery, layout=layout, scenery_data=scenery_data)
+        scenery_data = model_scenery(rs, d, m, disc.read(tn), thin, slot=slot, quad=quad, remesh=remesh, props=props,
+                                     cell_cut=CELL_CUT.get(n), road_copy=ROAD_COPY.get(n) if road_copy else None)
+    c = converted_course(rs, d, exe, n, slot=slot, scenery=scenery, layout=layout, scenery_data=scenery_data,
+                         variant=variant, plain=plain)
+    if variant == "R" and n < 3:                    # the arcade's segment-keyed tables on the reverse road
+        offset = reverse.point_offset(plain, d)
+        flags = reverse.reversed_flags(golden.decode_course(rs, n).segment_flags[1], offset)
+        c = dataclasses.replace(c, segment_flags=(c.segment_flags[0], flags))
+        out = encode(rs, c, RACE_FIELDS)
+        tunnel = any(f & C.SEGMENT_TUNNEL for f in flags) or any(st.flags & C.SEGMENT_TUNNEL for st in c.steps)
+        return _reverse_tables(out, n, slot, offset, len(flags), tunnel)
     if scenery == "model":
         return encode(rs, c, RACE_FIELDS + MODEL_FIELDS + (ID_FIELDS if slot else ()))
     return encode(rs, c, RACE_FIELDS + (SCENERY_FIELDS if scenery == "empty" else ()))
@@ -2919,12 +3084,125 @@ RACE_TIMES: dict[int, dict[tuple[int, int], tuple[int, tuple[int, ...]]]] = {
         (2, 2): (26464, (821, 821, 821)),
         (2, 3): (26399, (819, 819, 819)),
     },
+    8: {
+        (0, 0): (3315, (955,)),
+        (0, 1): (3013, (868,)),
+        (0, 2): (3054, (880,)),
+        (0, 3): (3078, (887,)),
+        (1, 0): (12082, (596,)),
+        (1, 1): (11997, (592,)),
+        (1, 2): (12556, (620,)),
+        (1, 3): (13021, (643,)),
+        (2, 0): (12452, (1030,)),
+        (2, 1): (12020, (994,)),
+        (2, 2): (12048, (996,)),
+        (2, 3): (12018, (994,)),
+    },
+    9: {
+        (0, 0): (5360, (1161, 907, 902, 670, 850, 1756)),
+        (0, 1): (4872, (1055, 824, 820, 609, 773, 1596)),
+        (0, 2): (4939, (1069, 835, 831, 617, 784, 1618)),
+        (0, 3): (4977, (1078, 842, 838, 622, 790, 1630)),
+        (1, 0): (17419, (669, 669, 669, 669, 669, 669)),
+        (1, 1): (17296, (664, 664, 664, 664, 664, 664)),
+        (1, 2): (18101, (695, 695, 695, 695, 695, 695)),
+        (1, 3): (18772, (721, 721, 721, 721, 721, 721)),
+        (2, 0): (18325, (1111, 1111, 1111, 1111, 1111, 1111)),
+        (2, 1): (17689, (1072, 1072, 1072, 1072, 1072, 1072)),
+        (2, 2): (17731, (1075, 1075, 1075, 1075, 1075, 1075)),
+        (2, 3): (17687, (1072, 1072, 1072, 1072, 1072, 1072)),
+    },
+    10: {
+        (0, 0): (4665, (678, 769, 1314)),
+        (0, 1): (4240, (616, 699, 1194)),
+        (0, 2): (4298, (624, 709, 1210)),
+        (0, 3): (4331, (629, 714, 1220)),
+        (1, 0): (15548, (591, 591, 591)),
+        (1, 1): (15438, (587, 587, 587)),
+        (1, 2): (16157, (614, 614, 614)),
+        (1, 3): (16756, (637, 637, 637)),
+        (2, 0): (16441, (981, 981, 981)),
+        (2, 1): (15871, (947, 947, 947)),
+        (2, 2): (15908, (949, 949, 949)),
+        (2, 3): (15869, (947, 947, 947)),
+    },
+    11: {
+        (0, 0): (8209, (863, 837, 1203)),
+        (0, 1): (7461, (784, 761, 1093)),
+        (0, 2): (7563, (795, 771, 1108)),
+        (0, 3): (7621, (801, 777, 1116)),
+        (1, 0): (32105, (621, 621, 621)),
+        (1, 1): (31878, (617, 617, 617)),
+        (1, 2): (33362, (646, 646, 646)),
+        (1, 3): (34599, (670, 670, 670)),
+        (2, 0): (33783, (1032, 1032, 1032)),
+        (2, 1): (32611, (996, 996, 996)),
+        (2, 2): (32688, (998, 998, 998)),
+        (2, 3): (32607, (996, 996, 996)),
+    },
+    12: {
+        (0, 0): (6698, (736, 643, 926)),
+        (0, 1): (6088, (669, 584, 842)),
+        (0, 2): (6172, (678, 592, 854)),
+        (0, 3): (6219, (683, 597, 860)),
+        (1, 0): (25875, (493, 493, 493)),
+        (1, 1): (25692, (490, 490, 490)),
+        (1, 2): (26888, (513, 513, 513)),
+        (1, 3): (27885, (532, 532, 532)),
+        (2, 0): (28178, (819, 819, 819)),
+        (2, 1): (27201, (791, 791, 791)),
+        (2, 2): (27265, (793, 793, 793)),
+        (2, 3): (27198, (791, 791, 791)),
+    },
+    13: {
+        (0, 0): (4000, (1122,)),
+        (0, 1): (3636, (1020,)),
+        (0, 2): (3686, (1034,)),
+        (0, 3): (3714, (1042,)),
+        (1, 0): (14302, (701,)),
+        (1, 1): (14201, (696,)),
+        (1, 2): (14862, (728,)),
+        (1, 3): (15413, (755,)),
+        (2, 0): (14729, (1211,)),
+        (2, 1): (14218, (1169,)),
+        (2, 2): (14251, (1172,)),
+        (2, 3): (14216, (1169,)),
+    },
+    14: {
+        (0, 0): (6154, (1061, 982)),
+        (0, 1): (5593, (964, 893)),
+        (0, 2): (5670, (977, 905)),
+        (0, 3): (5713, (985, 912)),
+        (1, 0): (23189, (657, 657)),
+        (1, 1): (23025, (652, 652)),
+        (1, 2): (24097, (682, 682)),
+        (1, 3): (24990, (708, 708)),
+        (2, 0): (25372, (1090, 1090)),
+        (2, 1): (24492, (1052, 1052)),
+        (2, 2): (24550, (1054, 1054)),
+        (2, 3): (24489, (1052, 1052)),
+    },
+    15: {
+        (0, 0): (6420, (1095, 558, 725)),
+        (0, 1): (5835, (995, 507, 659)),
+        (0, 2): (5915, (1009, 514, 668)),
+        (0, 3): (5960, (1016, 518, 673)),
+        (1, 0): (26200, (509, 509, 509)),
+        (1, 1): (26015, (505, 505, 505)),
+        (1, 2): (27226, (529, 529, 529)),
+        (1, 3): (28236, (548, 548, 548)),
+        (2, 0): (27091, (845, 845, 845)),
+        (2, 1): (26151, (816, 816, 816)),
+        (2, 2): (26212, (818, 818, 818)),
+        (2, 3): (26148, (816, 816, 816)),
+    },
 }
 """The converted courses' own time tables (v0.1.2, docs/superpowers/specs/2026-11-15-race-times-design.md): id 3-7 ->
 (mode 0-2, difficulty 0-3) -> (start, one lap's pass words: the checkpoints in order, then the lap line); the table is
 the start then that lap repeated for every lap (the phantom last word included), `race_table`. Frozen from
 `racetimes.derive` on the AI field's measured sector times (tests/data/race_times_measured.json, spike/race_times.py,
-docs/spike/2026-11-race-times.md); tests/test_release.py test_race_times_frozen recomputes them. The start makes the
+docs/spike/2026-11-race-times.md); tests/test_release.py test_race_times_frozen recomputes them. Ids 8-15 (M9 stage
+4): the reverses, measured from the Course Direction screen and derived by the same rule (racetimes.REVERSE). The start makes the
 whole race as generous as the arcade's own courses against their AI field (racetimes module docstring)."""
 
 
@@ -2977,31 +3255,42 @@ def race_times(s: RomSet, c: golden.Course, tables: dict[tuple[int, int], tuple[
 
 PIT_IDS = (3, 4, 5, 6, 7)
 """The course ids pit_stalls writes: the converted courses (the originals keep the arcade's own stalls)."""
+REVERSE_OFFSET = 8
+"""M9: course n's reverse is at id n + REVERSE_OFFSET (release.REVERSE_IDS, dirscreen.REVERSE_OFFSET)."""
+REVERSE_PIT_COURSES = tuple(range(8))
+"""M9: the courses whose reverse (id n + REVERSE_OFFSET) pit_stalls(..., "R") gives the disc's R stalls: all eight."""
 
 
-def pit_stalls(s: RomSet, disc: DcDisc, n: int) -> RomSet:
+def pit_stalls(s: RomSet, disc: DcDisc, n: int, variant: str = "") -> RomSet:
     """`s` (a grown set) with course id `n` (one of PIT_IDS, converted at its own id) given Dreamcast course n's pit
     stalls (dc.exe.pit_stalls of the disc's 1ST_READ.BIN, the plain group; each x moved by SHIFT[n] as the course is,
     single precision): course.encode_pit_stalls at the last free bytes of ID_DATA_FREE (`last_fit`, so the first fits
     after it, the views', place as before), its CAR_TABLES_230E50 entry repointed there. Before v0.1.2 every new id
     read Beginner's stalls (grow_ids' fill), which lie behind the car on the box of a converted course, so the stop
     skipped all seven waypoints in 7 frames and the car drove on (docs/follow-ups/v0.1.2.md, "Pit stops").
-    ConvertError for `s` not a RomSet, `disc` not a DcDisc, an `n` outside PIT_IDS or a set whose CAR_TABLES_230E50
-    is not the grown table; DcError and CourseError from the readers and the encoder pass through."""
+    M9 stage 4: `variant="R"` gives course n's reverse, id n + 8 (n 0-7, REVERSE_PIT_COURSES), the R group (x moved
+    by SHIFT[n] as the plain; the arcade's three have none: the disc's plain stalls of 0-2 are the arcade's own).
+    ConvertError for `s` not a RomSet, `disc` not a DcDisc, an `n` outside PIT_IDS (REVERSE_PIT_COURSES for "R"), a
+    variant other than "" and "R", or a set whose CAR_TABLES_230E50 is not the grown table; DcError and CourseError
+    from the readers and the encoder pass through."""
     s = _romset(s)
     if not isinstance(disc, DcDisc):
         raise ConvertError(f"{type(disc).__name__} is not a DcDisc")
-    if not is_int(n) or n not in PIT_IDS:
-        raise ConvertError(f"course {n!r}: pit stalls are written for {PIT_IDS}")
+    if variant not in ("", "R"):
+        raise ConvertError(f"pit stalls: variant {variant!r} is not '' or 'R'")
+    ids = REVERSE_PIT_COURSES if variant else PIT_IDS
+    if not is_int(n) or isinstance(n, bool) or n not in ids:
+        raise ConvertError(f"course {n!r}: {'reverse ' if variant else ''}pit stalls are written for {ids}")
+    slot = n + (REVERSE_OFFSET if variant else 0)
     table = C.id_table(s, "CAR_TABLES_230E50")
     if table != C.ID_ARRAYS["CAR_TABLES_230E50"].new:
         raise ConvertError(f"course {n}: CAR_TABLES_230E50 is read at {table:#x}, not the grown table (grow_ids)")
     move = _offset(SHIFT.get(n, 0.0), "x", "shifted")
     stalls = tuple(tuple(C.PitWaypoint(move(w.x), w.z, w.speed) for w in st)
-                   for st in dc_exe.pit_stalls(disc.read(EXE_NAME), n))
-    at = last_fit(s, "data", ID_DATA_FREE, C.PIT_STALLS_SIZE, f"course {n}'s pit stalls")
+                   for st in dc_exe.pit_stalls(disc.read(EXE_NAME), n, variant))
+    at = last_fit(s, "data", ID_DATA_FREE, C.PIT_STALLS_SIZE, f"course id {slot}'s pit stalls")
     return s.with_patches({("data", at): C.encode_pit_stalls(stalls, DATA_BASE + at),
-                           ("data", table + 4 * n - DATA_BASE): struct.pack("<I", DATA_BASE + at)})
+                           ("data", table + 4 * slot - DATA_BASE): struct.pack("<I", DATA_BASE + at)})
 
 
 # ---- the Dreamcast's own mirror as a check (Phase 9 Task 4) ----

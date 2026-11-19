@@ -1417,3 +1417,35 @@ def test_cell_cut_spans_both_axes():
     assert {c for c, _, _ in rows} == {0x83, 0x84, 0x93, 0x94}
     assert sum(_flat_area(p) for _, p, _ in rows) == pytest.approx(100 * 100, rel=1e-6)
     assert all(model.overhang(p) < 1e-3 for _, p, _ in rows)
+
+
+def _wall(x: float, z0: float, z1: float):
+    """A vertical double-sided strip at arcade x `x` from z z0 to z1, 20 units tall (a wall, not ground)."""
+    pts = [(-z0, 41.0), (-z0, 21.0), (-z1, 41.0), (-z1, 21.0)]
+    return make_model([mesh([Strip(0x11, tuple(V(x, y, z, u=z / 16, v=y / 16) for z, y in pts))], texture=0)])
+
+
+def test_road_copy():
+    """convert_model's `road_copy` (build.ROAD_COPY, v0.2: Pascal's Rin Rin Rink report, the road vanishing where the
+    game's culling drops the cell the camera still sees): a near-flat polygon whose centroid is within `band` units
+    of the road line and which comes within `margin` units of a neighbouring cell is filed in that cell too (the same
+    records), so it draws when either cell is open. A strip in cell 0x94, 7.5 units from its west edge (x -512.5) and
+    far from its rows' edges, by a road along z 180: in 0x94 and 0x93, the same polygon; with the road far away, or
+    a margin it does not reach, or as a wall, only in 0x94; None copies nothing (the default). A bad `road_copy` is
+    refused."""
+    road = [(-700.0 + 20 * k, 180.0) for k in range(20)]
+    m = _long_strip(x0=-505.0, x1=-495.0, z0=170.0, z1=190.0)
+    plain = model.convert_model(m)
+    assert sorted(plain) == [0x94]
+    copied = model.convert_model(m, road_copy=(road, 16.0, 10.0))
+    rows = _cell_rows(copied)
+    assert sorted(copied) == [0x93, 0x94] and len(rows) == 2 and rows[0][1:] == rows[1][1:]
+    assert model.convert_model(m, road_copy=([(x, z + 300.0) for x, z in road], 16.0, 10.0)) == plain
+    assert model.convert_model(m, road_copy=(road, 6.0, 10.0)) == plain           # 7.5 from the edge: not within 6
+    assert model.convert_model(m, road_copy=None) == plain
+    w = _wall(-505.0, 170.0, 190.0)
+    assert sorted(model.convert_model(w, road_copy=(road, 16.0, 10.0))) == sorted(model.convert_model(w))
+    for bad in ((road, -1.0, 10.0), (road, 16.0, math.nan), (road[:2], 16.0, 10.0), ("road", 16.0, 10.0),
+                (road, 16.0), (road, True, 10.0), 5):
+        with pytest.raises(ConvertError):
+            model.convert_model(m, road_copy=bad)

@@ -641,6 +641,43 @@ def _lattice(corners, steps: int = 8):
 EXCEPTION = (6, "cell 1062", 2226, -523.64, 103.91, 0.0206)
 
 
+def _heights_check(inv, n: int, d: CourseData, repaired: dict[int, str], plain: CourseData | None = None,
+                   course: int | None = None) -> list:
+    """test_repaired_ground_heights' checks on one file (its docstring), the "plain" cells left out (their own test):
+    every point answered, by its own polygon's cell within HEIGHT_TOLERANCE, that cell within its f32 edge reach;
+    the answers past the tolerance from the reference returned as exceptions (n, kind, cell, x, z, error)."""
+    g, dc = ground.convert_ground(d, n if course is None else course, plain=plain), _DcGround(d)
+    points = [(x, y, z, "road") for x, y, z in _lane_points(tables.road_line(d))]
+    points += [(*p.position, "ai") for line in tables.ai_lines(d) for p in line]
+    for k, how in repaired.items():
+        if how == "plain":
+            continue
+        for x, z in _lattice(dc.plain[k]) + _lattice(g.polys[k].corners):
+            want = dc.answer(x, _arcade_height(dc.plain[k], x, z), z, layer=True)
+            assert want is not None, (n, k, x, z)
+            points.append((x, want[0], z, f"cell {k}"))
+    lines = [k for k, how in repaired.items() if how == "line"]
+    worst, exceptions = {}, []
+    for x, y, z, kind in points:
+        got, want = tgp.query(g, x, y, z, inv), dc.answer(x, y, z)
+        assert got is not None and want is not None, (n, kind, x, y, z, got, want)
+        if repaired.get(got[1]) == "plain":
+            continue                                    # its own test (test_plain_cell_heights)
+        own = dc.plain[got[1]]
+        assert _near(own, x, z, tgp_edge=True), (n, kind, x, y, z, got)
+        assert abs(got[0] - _arcade_height(own, x, z)) <= ground.HEIGHT_TOLERANCE, (n, kind, x, y, z, got)
+        err = abs(got[0] - want[0])
+        if err > ground.HEIGHT_TOLERANCE:
+            exceptions.append((n, kind, got[1], x, z, err))
+            continue
+        key = kind if kind in ("road", "ai") else "line" if kind in {f"cell {k}" for k in lines} else "lattice"
+        if err > worst.get(key, (-1.0,))[0]:
+            worst[key] = (err, kind, x, z)
+    print(f"\nn {n}: {len(points)} points; worst " +
+          ", ".join(f"{key} {v[0]:.3g} ({v[1]} at {v[2]:.2f}, {v[3]:.2f})" for key, v in sorted(worst.items())))
+    return exceptions
+
+
 def test_repaired_ground_heights(disc, romset_zip):
     """Review Focus 2, n 4-7: tgp.query (the TGP's 1/x table) on the repaired ground answers within
     ground.HEIGHT_TOLERANCE (0.005 units, stated before measuring: docs/spike/2026-11-courses-4-7.md, "Ground
@@ -655,31 +692,7 @@ def test_repaired_ground_heights(disc, romset_zip):
     inv = tgp.inv_table(_romset(romset_zip))
     exceptions = []
     for n in REFUSED:
-        d = _data(disc, n)
-        g, dc = ground.convert_ground(d, n), _DcGround(d)
-        points = [(x, y, z, "road") for x, y, z in _lane_points(tables.road_line(d))]
-        points += [(*p.position, "ai") for line in tables.ai_lines(d) for p in line]
-        for k in ground.REPAIRED[n]:
-            for x, z in _lattice(dc.plain[k]) + _lattice(g.polys[k].corners):
-                want = dc.answer(x, _arcade_height(dc.plain[k], x, z), z, layer=True)
-                assert want is not None, (n, k, x, z)
-                points.append((x, want[0], z, f"cell {k}"))
-        worst, line = {}, REFUSED[n][1]
-        for x, y, z, kind in points:
-            got, want = tgp.query(g, x, y, z, inv), dc.answer(x, y, z)
-            assert got is not None and want is not None, (n, kind, x, y, z, got, want)
-            own = dc.plain[got[1]]
-            assert _near(own, x, z, tgp_edge=True), (n, kind, x, y, z, got)
-            assert abs(got[0] - _arcade_height(own, x, z)) <= ground.HEIGHT_TOLERANCE, (n, kind, x, y, z, got)
-            err = abs(got[0] - want[0])
-            if err > ground.HEIGHT_TOLERANCE:
-                exceptions.append((n, kind, got[1], x, z, err))
-                continue
-            key = kind if kind in ("road", "ai") else "line" if kind == f"cell {line}" else "lattice"
-            if err > worst.get(key, (-1.0,))[0]:
-                worst[key] = (err, kind, x, z)
-        print(f"\nn {n}: {len(points)} points; worst " +
-              ", ".join(f"{key} {v[0]:.3g} ({v[1]} at {v[2]:.2f}, {v[3]:.2f})" for key, v in sorted(worst.items())))
+        exceptions += _heights_check(inv, n, _data(disc, n), ground.REPAIRED[n])
     print(f"exceptions: {exceptions}")
     n, kind, cell, x, z, err = EXCEPTION
     assert len(exceptions) == 1 and exceptions[0][:3] == (n, kind, cell), exceptions
@@ -700,28 +713,235 @@ def test_repaired_ground_against_the_dreamcast(disc, romset_zip):
     (no split the TGP can hold gives the routine's surface); the other "line" cells' whole distances within the
     tolerance either way."""
     recip = tgp._recip_fn(tgp.inv_table(_romset(romset_zip)))
-    road_gap = {}
-    for n in REFUSED:
-        d = _data(disc, n)
-        g, dc = ground.convert_ground(d, n), _DcGround(d)
-        for k, how in ground.REPAIRED[n].items():
-            gap = split = 0.0
-            for x, z in _lattice(dc.plain[k]):
-                h = float(tgp._height(g.polys[k].corners, tgp._F(x), tgp._F(z), recip))
-                want = _dc_routine(d.cells[k].corners, x, z)
-                own = abs(_arcade_height(dc.plain[k], x, z) - want)
-                assert abs(h - want) <= own + ground.HEIGHT_TOLERANCE, (n, k, x, z, h, want, own)
-                gap, split = max(gap, abs(h - want)), max(split, abs(_split13_height(dc.plain[k], x, z) - want))
-            if how == "line":
-                print(f"\nn {n} cell {k}: TGP to the routine {gap:.3g}, a 1-3 split {split:.3g}")
-                if (n, k) == (6, 2256):
-                    assert 0.011 < gap < 0.012 and 0.006 < split < 0.007
-                else:
-                    assert gap <= ground.HEIGHT_TOLERANCE and split <= ground.HEIGHT_TOLERANCE
-        steps = len(d.steps)
-        for x, y, z in _lane_points(tables.road_line(d)):
-            want = dc.answer(x, y, z)
-            if want is not None and want[1] < steps:
-                road_gap[n] = max(road_gap.get(n, 0.0), abs(want[0] - _dc_routine(d.cells[want[1]].corners, x, z)))
+    road_gap = {n: _routine_check(recip, n, _data(disc, n), ground.REPAIRED[n], named=(6, 2256, 0.0114, 0.0065)) for n in REFUSED}
     print(f"the conversion's rule to the routine on the road: {road_gap}")
     assert {n: round(v, 2) for n, v in road_gap.items()} == {4: 0.12, 5: 0.06, 6: 0.23, 7: 0.13}
+
+
+def _routine_check(recip, n: int, d: CourseData, repaired: dict[int, str], named: tuple | None,
+                   plain: CourseData | None = None, course: int | None = None) -> float:
+    """test_repaired_ground_against_the_dreamcast's checks on one file (its docstring), the "plain" cells left out
+    (their own test); `named` (n, cell, distance, 1-3 split distance): the "line" cell whose whole distance from the
+    routine passes the tolerance, pinned within 0.0005. Returns the conversion's rule to
+    the routine at most on the road's lane points."""
+    g, dc = ground.convert_ground(d, n if course is None else course, plain=plain), _DcGround(d)
+    for k, how in repaired.items():
+        if how == "plain":
+            continue
+        gap = split = 0.0
+        for x, z in _lattice(dc.plain[k]):
+            h = float(tgp._height(g.polys[k].corners, tgp._F(x), tgp._F(z), recip))
+            want = _dc_routine(d.cells[k].corners, x, z)
+            own = abs(_arcade_height(dc.plain[k], x, z) - want)
+            assert abs(h - want) <= own + ground.HEIGHT_TOLERANCE, (n, k, x, z, h, want, own)
+            gap, split = max(gap, abs(h - want)), max(split, abs(_split13_height(dc.plain[k], x, z) - want))
+        if how == "line":
+            print(f"\nn {n} cell {k}: TGP to the routine {gap:.3g}, a 1-3 split {split:.3g}")
+            if named is not None and (n, k) == named[:2]:
+                assert abs(gap - named[2]) < 5e-4 and abs(split - named[3]) < 5e-4, (n, k, gap, split)
+            else:
+                assert gap <= ground.HEIGHT_TOLERANCE and split <= ground.HEIGHT_TOLERANCE
+    road, steps = 0.0, len(d.steps)
+    for x, y, z in _lane_points(tables.road_line(d)):
+        want = dc.answer(x, y, z)
+        if want is not None and want[1] < steps:
+            road = max(road, abs(want[0] - _dc_routine(d.cells[want[1]].corners, x, z)))
+    return road
+
+
+# ---- the R files (reverse stage 2, docs/superpowers/plans/2026-11-17-reverse-stage2-ground.md) ----
+
+def _rdata(disc, n: int) -> CourseData:
+    from dtools.dc.data import decode_data
+    from dtools.dc.disc import course_files
+    name = course_files(n, "R", kind="data")
+    return decode_data(disc.read(name), name)
+
+
+# Cells of n 0-2 R whose corner order is not the plain cell's mirrored with offset two (recon, 17 Nov 2026): after the
+# re-wind they are the plain cell turned by another amount, the same four corners.
+OTHER_ORDER = {0: 2, 1: 5, 2: 2}
+
+
+def test_mixed_winding_is_refused():
+    """A file with both windings is refused at its first cell of the other winding, never re-wound in part; every
+    cell the other way is re-wound whole (corners reversed), which here gives back make_data's own order."""
+    d = make_data()
+    assert ground.rewound(d) is False
+    flipped = dataclasses.replace(d, cells=tuple(dataclasses.replace(c, corners=c.corners[::-1]) for c in d.cells))
+    assert ground.rewound(flipped) is True
+    assert ground.convert_ground(flipped).polys == ground.convert_ground(d).polys
+    mixed = with_cell(d, 1, corners=d.cells[1].corners[::-1])
+    for f in (ground.rewound, ground.convert_ground, ground.repairs):
+        with pytest.raises(ConvertError, match=r"cell 1: XZ area .* not negative"):
+            f(mixed)
+    mixed = with_cell(flipped, 1, corners=d.cells[1].corners)          # cell 0 the other way, cell 1 not
+    for f in (ground.rewound, ground.convert_ground, ground.repairs):
+        with pytest.raises(ConvertError, match=r"cell 1: XZ area -1\.0 once z is negated is negative, unlike cell 0"):
+            f(mixed)
+
+
+def test_r_ground_of_the_arcade_three_converts(disc):
+    """n 0-2 R: every cell wound the other way (rewound True; the plain file False); converted for id n + 8, every
+    polygon holds the plain polygon's corners turned by two (the converted courses' R convention) but OTHER_ORDER's
+    cells, which hold the same four corners in another turn; the direction is the R file's word less
+    DIRECTION_OFFSET."""
+    for n in (0, 1, 2):
+        p, r = _data(disc, n), _rdata(disc, n)
+        assert ground.rewound(r) is True and ground.rewound(p) is False
+        gp, gr = ground.convert_ground(p, n), ground.convert_ground(r, n + 8)
+        assert gr.course == n + 8 and len(gr.polys) == len(gp.polys)
+        other = 0
+        for k, (a, b) in enumerate(zip(gp.polys, gr.polys, strict=True)):
+            if b.corners != a.corners[2:] + a.corners[:2]:
+                assert any(b.corners == a.corners[j:] + a.corners[:j] for j in range(4)), (n, k)
+                other += 1
+            assert b.direction == r.cells[k].direction - ground.DIRECTION_OFFSET, (n, k)
+        assert other == OTHER_ORDER[n], (n, other)
+
+
+# The most a re-wound polygon's TGP height differs from the plain polygon's at a point inside it: f32 rounding of the
+# same two triangles taken from other corners (corners turned by two keep the TGP's 0-2 diagonal); measured 2.9e-5.
+REWOUND_ROUNDING = 1e-4
+# The one point answered outside its polygon (within the TGP's edge reach) where the two corner orders extend
+# different triangles: (n, polygon, units outside, height difference), measured 17 Nov 2026.
+REWOUND_EDGE = (2, 171, 0.0021, 0.0124)
+
+
+def _outside(corners, x: float, z: float) -> float:
+    """How far (x, z) lies outside the polygon's XZ outline (the arcade's negative winding), 0 inside."""
+    worst = 0.0
+    for i in range(4):
+        (x0, _, z0), (x1, _, z1) = corners[i], corners[(i + 1) % 4]
+        ex, ez = x1 - x0, z1 - z0
+        worst = max(worst, -((x - x0) * ez - (z - z0) * ex) / math.hypot(ex, ez))
+    return worst
+
+
+def test_rewound_heights_equal_the_plain_ground(disc, romset_zip):
+    """n 0-2: the same surface. tgp.query on the R ground answers every road lane point and AI point of the plain
+    course; at a point inside its polygon k the answer is the plain polygon k's TGP height within REWOUND_ROUNDING.
+    The polygon the two grounds pick may differ on a shared edge (46 / 493 / 170 points on n 0-2: the edge test's
+    rounding with the corners in another order). A point the TGP answers just outside its polygon is extended from
+    the triangle on its side, which the corner order decides there: REWOUND_EDGE, the one such point past the
+    rounding."""
+    inv = tgp.inv_table(_romset(romset_zip))
+    recip = tgp._recip_fn(inv)
+    edge = []
+    for n in (0, 1, 2):
+        p, r = _data(disc, n), _rdata(disc, n)
+        gp, gr = ground.convert_ground(p, n), ground.convert_ground(r, n + 8)
+        points = _lane_points(tables.road_line(p)) + [q.position for line in tables.ai_lines(p) for q in line]
+        worst, other = 0.0, 0
+        for x, y, z in points:
+            b = tgp.query(gr, x, y, z, inv)
+            assert b is not None, (n, x, y, z)
+            err = abs(b[0] - float(tgp._height(gp.polys[b[1]].corners, tgp._F(x), tgp._F(z), recip)))
+            if err > REWOUND_ROUNDING:
+                edge.append((n, b[1], _outside(gp.polys[b[1]].corners, x, z), err))
+            else:
+                worst = max(worst, err)
+            other += tgp.query(gp, x, y, z, inv)[1] != b[1]
+        print(f"\nn {n}: {len(points)} points, worst inside {worst:.3g}, another polygon at {other}")
+    print(f"edge: {edge}")
+    assert len(edge) == 1 and edge[0][:2] == REWOUND_EDGE[:2], edge
+    assert 0 < edge[0][2] < 0.01 and abs(edge[0][2] - REWOUND_EDGE[2]) < 5e-4
+    assert abs(edge[0][3] - REWOUND_EDGE[3]) < 5e-4
+
+
+def test_4r_converts_with_the_plain_cell(disc):
+    """4R cell 1765 (off-road) has two corners 0.1 units off the plain cell's, a notch past MAX_MOVE: refused alone;
+    with plain= the plain course's data it takes plain cell 1765's corners in the R cell's order (each within
+    PLAIN_SNAP of the R corner it replaces), its centre and direction the R file's; repairs names it "plain"."""
+    p, r = _data(disc, 4), _rdata(disc, 4)
+    with pytest.raises(ConvertError, match=r"cell 1765: not convex at corner 2: .* past MAX_MOVE"):
+        ground.convert_ground(r, 12)
+    g = ground.convert_ground(r, 12, plain=p)
+    want = ground.convert_ground(p, 4).polys[1765].corners
+    got = g.polys[1765].corners
+    assert sorted(got) == sorted(want) and got != tuple(ground._xyz(c, "c", "t") for c in r.cells[1765].corners)
+    for a, c in zip(got, r.cells[1765].corners, strict=True):
+        assert math.dist(a, ground._xyz(c, "c", "t")) <= ground.PLAIN_SNAP
+    assert g.polys[1765].direction == r.cells[1765].direction - ground.DIRECTION_OFFSET
+    assert g.polys[1765].centre == ground._xyz(r.cells[1765].centre, "c", "t")
+    assert ground.repairs(r, plain=p)[1765] == "plain"
+    others = ground.convert_ground(r, 12, plain=p).polys
+    assert all(a == b for k, (a, b) in enumerate(zip(g.polys, others)) if k != 1765)
+
+
+def test_plain_cell_must_match(disc):
+    """plain= must be the same ground: a cell that must borrow from a plain file of another cell count is refused,
+    naming its own refusal and both counts; a plain cell 1765 moved 0.2 units in x (corners past PLAIN_SNAP) leaves
+    the original refusal; plain= changes nothing for a file that converts without it, even one with another cell
+    count (5R has one cell more than 5)."""
+    p, r = _data(disc, 4), _rdata(disc, 4)
+    with pytest.raises(ConvertError, match=r"cell 1765: not convex .*; .*plain course data has 2168 cells, this one 2169"):
+        ground.convert_ground(r, 12, plain=dataclasses.replace(p, cells=p.cells[:-1]))
+    p5, r5 = _data(disc, 5), _rdata(disc, 5)
+    assert len(p5.cells) != len(r5.cells)
+    assert ground.convert_ground(r5, 13, plain=p5) == ground.convert_ground(r5, 13)
+    moved = with_cell(p, 1765, corners=tuple((x + 0.2, y, z) for x, y, z in p.cells[1765].corners))
+    with pytest.raises(ConvertError, match=r"cell 1765: not convex at corner 2: .* past MAX_MOVE"):
+        ground.convert_ground(r, 12, plain=moved)
+    p3, r3 = _data(disc, 3), _rdata(disc, 3)
+    assert ground.convert_ground(r3, 11, plain=p3) == ground.convert_ground(r3, 11)
+    assert ground.repairs(r3, plain=p3) == ground.repairs(r3)
+
+
+# 4R polygon 1765 (the plain cell borrowed) against the Dreamcast's routine on the R cell, at most: the R cell's two
+# moved corners (0.141 units) on a slope give 0.00614 near them, past HEIGHT_TOLERANCE by 0.0011; an off-road cell
+# (measured 17 Nov 2026).
+PLAIN_CELL_GAP = 0.0062
+
+
+def test_plain_cell_heights(disc, romset_zip):
+    """On the 8 x 8 lattice over 4R's converted polygon 1765 the TGP's height is within HEIGHT_TOLERANCE of plain 4's
+    polygon 1765 (the same four corners; the R file's corner order, turned by three, splits the cell along its other
+    diagonal: 0.0049, the cell's non-planarity), and differs from the Dreamcast's routine on the R cell by at most
+    PLAIN_CELL_GAP (what borrowing the plain corners costs there)."""
+    recip = tgp._recip_fn(tgp.inv_table(_romset(romset_zip)))
+    p, r = _data(disc, 4), _rdata(disc, 4)
+    poly = ground.convert_ground(r, 12, plain=p).polys[1765]
+    plain_poly = ground.convert_ground(p, 4).polys[1765]
+    same = gap = 0.0
+    for x, z in _lattice(poly.corners):
+        h = float(tgp._height(poly.corners, tgp._F(x), tgp._F(z), recip))
+        same = max(same, abs(h - float(tgp._height(plain_poly.corners, tgp._F(x), tgp._F(z), recip))))
+        gap = max(gap, abs(h - _dc_routine(r.cells[1765].corners, x, z)))
+    print(f"\n4R cell 1765: against plain 4's polygon {same:.3g}, against the routine on the R cell {gap:.3g}")
+    assert same <= ground.HEIGHT_TOLERANCE
+    assert ground.HEIGHT_TOLERANCE < gap <= PLAIN_CELL_GAP
+
+
+def test_r_repairs_pinned(disc):
+    """What repairs(R, plain=P) gives for every R file is REPAIRED_R (n 0-2 none, as their plain files)."""
+    for n in range(8):
+        assert ground.repairs(_rdata(disc, n), plain=_data(disc, n)) == ground.REPAIRED_R.get(n, {}), n
+
+
+def test_r_repaired_ground_heights(disc, romset_zip):
+    """test_repaired_ground_heights on the R files with repairs (n 3-7, plain= their plain files; 4R's borrowed
+    cell is test_plain_cell_heights'), at their own road lane points and AI points and the repaired cells' lattices:
+    no answer past HEIGHT_TOLERANCE from the reference."""
+    inv = tgp.inv_table(_romset(romset_zip))
+    exceptions = []
+    for n in ground.REPAIRED_R:
+        exceptions += _heights_check(inv, n, _rdata(disc, n), ground.REPAIRED_R[n], plain=_data(disc, n), course=n + 8)
+    print(f"exceptions: {exceptions}")
+    assert exceptions == []
+
+
+# 5R polygon 564's corner 1 is a collinear corner nudged by ulps, so it lies on the 0-2 diagonal: the TGP's solve
+# (tgp._height, routine 0x684) divides by about zero there and its f32 products overflow to inf; the side test
+# still picks the 2-3-0 plane, and the heights pass. In MAME it is settled by the step 2-3 race gates.
+@pytest.mark.filterwarnings("ignore:overflow encountered in scalar multiply:RuntimeWarning")
+def test_r_repaired_ground_against_the_dreamcast(disc, romset_zip):
+    """test_repaired_ground_against_the_dreamcast on the R files with repairs: each repaired cell's TGP height
+    within the tolerance plus the cell's own gap of the Dreamcast's routine; 6R's cell 2256, the plain file's named
+    "line" cell, again the one whose whole distance passes the tolerance: 0.0161, split along 1-3 0.0135 (the plain
+    file's 0.0114 / 0.0065: the R file holds the cell a little differently)."""
+    recip = tgp._recip_fn(tgp.inv_table(_romset(romset_zip)))
+    road_gap = {n: _routine_check(recip, n, _rdata(disc, n), ground.REPAIRED_R[n], named=(6, 2256, 0.0161, 0.0135),
+                                  plain=_data(disc, n), course=n + 8) for n in ground.REPAIRED_R}
+    print(f"the conversion's rule to the routine on the R road: {road_gap}")
+    assert {n: round(v, 2) for n, v in road_gap.items()} == {3: 0.22, 4: 0.12, 5: 0.07, 6: 0.22, 7: 0.13}

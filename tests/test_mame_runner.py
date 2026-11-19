@@ -12,8 +12,8 @@ from dtools.mame.runner import LUA_DIR, MameError, parse_rate, run_mame
 
 @pytest.fixture
 def no_other_mame(monkeypatch):
-    """The fake-MAME tests do not start MAME, so they do not wait for another project's MAME run."""
-    monkeypatch.setattr(runner, "running_mame", lambda: [])
+    """The fake-MAME tests start no MAME: no job limit, so run_mame never looks for other MAME processes."""
+    monkeypatch.delenv("DAYTONA_MAME_JOBS", raising=False)
 
 
 @pytest.mark.mame
@@ -92,32 +92,91 @@ class _Clock:
         return self.t
 
 
-def test_wait_returns_once_the_other_mame_ends(monkeypatch):
-    seen = iter([["4242 mame vr"], ["4242 mame vr"], []])
-    monkeypatch.setattr(runner, "running_mame", lambda: next(seen))
+def test_wait_returns_once_a_slot_is_free(monkeypatch):
+    two, one = ["1 model2 daytona", "2 model2 daytona"], ["2 model2 daytona"]
+    seen = iter([two, two, one])
+    monkeypatch.setattr(runner, "running_daytona_mame", lambda: next(seen))
     clock = _Clock()
-    runner.wait_for_other_mame(600, 5, sleep=clock.sleep, clock=clock)
+    runner.wait_for_mame_slot(2, 600, 5, sleep=clock.sleep, clock=clock)
     assert clock.sleeps == [5, 5]
 
 
-def test_wait_gives_up_naming_the_other_mame(monkeypatch):
-    monkeypatch.setattr(runner, "running_mame", lambda: ["4242 /opt/homebrew/bin/mame vr -str 30"])
+def test_wait_gives_up_naming_the_daytona_mame(monkeypatch):
+    monkeypatch.setattr(runner, "running_daytona_mame", lambda: ["4242 /x/build/mame/model2 daytona -str 30"])
     clock = _Clock()
-    with pytest.raises(MameError, match=r"(?s)-13.*4242 /opt/homebrew/bin/mame vr"):
-        runner.wait_for_other_mame(12, 5, sleep=clock.sleep, clock=clock)
+    with pytest.raises(MameError, match=r"(?s)DAYTONA_MAME_JOBS=1.*4242 /x/build/mame/model2 daytona"):
+        runner.wait_for_mame_slot(1, 12, 5, sleep=clock.sleep, clock=clock)
     assert clock.t == 12 and clock.sleeps == [5, 5, 2]          # bounded: polls up to the timeout, not past it
 
 
+@pytest.mark.parametrize("value, jobs", [(None, None), ("", None), ("1", 1), ("6", 6)])
+def test_mame_jobs_reads_the_environment(monkeypatch, value, jobs):
+    if value is None:
+        monkeypatch.delenv("DAYTONA_MAME_JOBS", raising=False)
+    else:
+        monkeypatch.setenv("DAYTONA_MAME_JOBS", value)
+    assert runner.mame_jobs() == jobs
+
+
+@pytest.mark.parametrize("value", ["0", "-2", "two"])
+def test_mame_jobs_refuses_a_bad_value(monkeypatch, value):
+    monkeypatch.setenv("DAYTONA_MAME_JOBS", value)
+    with pytest.raises(MameError, match="DAYTONA_MAME_JOBS must be a positive integer"):
+        runner.mame_jobs()
+
+
+def _fake_ps(tmp_path, monkeypatch, lines: dict[str, list[str]]):
+    """pgrep and ps on PATH: `pgrep -x NAME` prints the pids of lines[NAME]; `ps` prints every `pid command` line."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    pg = "\n".join(f'[ "$2" = "{name}" ] && printf "%s\\n" {" ".join(ln.split()[0] for ln in ls)}'
+                   for name, ls in lines.items())
+    ps = "\n".join(f'echo " {ln}"' for ls in lines.values() for ln in ls)
+    for name, body in (("pgrep", pg + "\nexit 0"), ("ps", ps)):
+        (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_ / name).chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_))
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
-def test_run_mame_waits_before_it_starts(tmp_path, monkeypatch):
+def test_running_daytona_mame_ignores_other_projects(tmp_path, monkeypatch):
+    """Only the MAME processes running this project's systems (daytona, dc) count; another project's MAME (vr,
+    genesis) does not, whether it is named mame or model2."""
+    _fake_ps(tmp_path, monkeypatch, {
+        "mame": ["4242 /opt/homebrew/bin/mame vr -str 30", "4243 /opt/homebrew/bin/mame genesis",
+                 "4244 mame dc -cdrom x"],
+        "model2": ["5151 /x/build/mame/model2 daytona -rompath /r", "5152 /y/model2 vr"]})
+    assert runner.running_daytona_mame() == ["4244 mame dc -cdrom x", "5151 /x/build/mame/model2 daytona -rompath /r"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
+def test_running_daytona_mame_without_pgrep(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))                     # no pgrep at all
+    assert runner.running_daytona_mame() == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
+def test_run_mame_does_not_wait_for_other_mame(tmp_path, monkeypatch, no_other_mame):
+    """No job limit: run_mame starts at once, with another project's MAME and even another daytona MAME running
+    (each run has its own comm port, so they no longer meet on 15112)."""
+    _fake_ps(tmp_path, monkeypatch, {"mame": ["4242 /opt/homebrew/bin/mame vr"],
+                                     "model2": ["5151 /x/build/mame/model2 daytona"]})
+    monkeypatch.setattr(runner.time, "sleep", lambda s: pytest.fail("run_mame waited"))
+    mame = _fake_mame(tmp_path, "echo 'Average speed: 100%'\nexit 0\n")
+    run_mame(tmp_path / "x.lua", 1, tmp_path / "run", tmp_path, mame=mame)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
+def test_run_mame_waits_for_a_slot_with_a_job_limit(tmp_path, monkeypatch):
     marker = tmp_path / "started"
-    states = iter([["1 mame"], []])
+    states = iter([["1 model2 daytona"], []])
 
     def running():
-        assert not marker.exists(), "MAME started while another one was running"
+        assert not marker.exists(), "MAME started while the job limit was reached"
         return next(states)
 
-    monkeypatch.setattr(runner, "running_mame", running)
+    monkeypatch.setenv("DAYTONA_MAME_JOBS", "1")
+    monkeypatch.setattr(runner, "running_daytona_mame", running)
     monkeypatch.setattr(runner.time, "sleep", lambda s: None)
     mame = _fake_mame(tmp_path, f"touch {marker}\necho 'Average speed: 100%'\nexit 0\n")
     run_mame(tmp_path / "x.lua", 1, tmp_path / "run", tmp_path, mame=mame)
@@ -125,32 +184,30 @@ def test_run_mame_waits_before_it_starts(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
-def test_running_mame_reads_pgrep_and_ps(tmp_path, monkeypatch):
-    """running_mame asks `pgrep -x mame` for the pids and `ps` for their command lines; none: []."""
-    bin_ = tmp_path / "bin"
-    bin_.mkdir()
-    for name, body in (("pgrep", '[ "$1 $2" = "-x mame" ] && echo 4242 && echo 4243'),
-                       ("ps", 'echo " 4242 /usr/bin/mame vr"; echo " 4243 mame other"')):
-        (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
-        (bin_ / name).chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_))
-    assert runner.running_mame() == ["4242 /usr/bin/mame vr", "4243 mame other"]
-    (bin_ / "pgrep").write_text("#!/bin/sh\nexit 1\n")
-    assert runner.running_mame() == []
+def test_run_mame_gives_each_run_its_own_comm_port(tmp_path, monkeypatch, no_other_mame):
+    """Daytona switches its comm board on at boot and MAME's default comm ports are 15112 for every instance, so two
+    runs at once met on that port and one died of SIGPIPE (-13; measured 2026-11-17, three race tests at once). Each
+    run listens on and connects to a free port of its own (local = remote, as a lone run on 15112), before
+    extra_args."""
+    ports = iter([15301, 15302])
+    monkeypatch.setattr(runner, "free_port", lambda: next(ports))
+    args = tmp_path / "args"
+    mame = _fake_mame(tmp_path, f"printf '%s\\n' \"$@\" >> {args}\necho END >> {args}\necho 'Average speed: 100%'\n")
+    for _ in range(2):
+        run_mame(tmp_path / "x.lua", 1, tmp_path / "run", tmp_path, mame=mame, extra_args=["-cdrom", "d.cue"])
+    runs = [r.splitlines() for r in args.read_text().split("END\n") if r]
+    for argv, port in zip(runs, ("15301", "15302")):
+        assert argv[argv.index("-comm_localport") + 1] == port
+        assert argv[argv.index("-comm_remoteport") + 1] == port
+        assert argv[-2:] == ["-cdrom", "d.cue"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: a shell-script fake MAME / pgrep and ps (dtools does not run MAME for players)")
-def test_running_mame_sees_the_custom_build(tmp_path, monkeypatch):
-    """The custom build's binary is named `model2` (tools/build-mame.sh, SUBTARGET=model2): running_mame asks pgrep for
-    it too, so a custom run waits for a stock one and the other way round."""
-    bin_ = tmp_path / "bin"
-    bin_.mkdir()
-    for name, body in (("pgrep", '[ "$1 $2" = "-x model2" ] && echo 5151'),
-                       ("ps", '[ "$4" = "5151" ] && echo " 5151 /x/build/mame/model2 daytona"')):
-        (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
-        (bin_ / name).chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_))
-    assert runner.running_mame() == ["5151 /x/build/mame/model2 daytona"]
+def test_free_port_is_free():
+    import socket
+    port = runner.free_port()
+    assert 1024 <= port <= 65535
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:   # nothing holds it: it binds again
+        s.bind(("0.0.0.0", port))
 
 
 def test_run_mame_refuses_a_missing_custom_build(tmp_path, no_other_mame):

@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import math
 import os
+import socket
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 LUA_DIR = Path(__file__).resolve().parent / "lua"
-MAME_WAIT = 600.0               # seconds run_mame waits for another MAME to end before giving up
+MAME_WAIT = 3600.0              # seconds run_mame waits for a job slot (DAYTONA_MAME_JOBS) before giving up
 MAME_POLL = 5.0                 # seconds between checks
 
 
@@ -24,11 +25,36 @@ class MameError(Exception):
 MAME_NAMES = ("mame", "model2")
 """Process names of a MAME: the installed one and the custom build (tools/build-mame.sh, SUBTARGET=model2)."""
 
+MAME_SYSTEMS = ("daytona", "dc")
+"""The systems this project runs: a MAME whose first argument is one of these counts against DAYTONA_MAME_JOBS."""
 
-def running_mame() -> list[str]:
-    """`pid command` of every running process named exactly one of MAME_NAMES (`pgrep -x` each, then `ps` for the
-    command lines); [] when there is none or pgrep is missing. MAME runs one instance at a time on this machine: a
-    second one exits -13 (probably the comm-board socket), and other projects run MAME too."""
+
+def free_port() -> int:
+    """A TCP port nothing listens on now (the system picks it): one run's comm port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("0.0.0.0", 0))
+        return s.getsockname()[1]
+
+
+def mame_jobs() -> int | None:
+    """DAYTONA_MAME_JOBS=n: at most n of this project's MAME runs at once on this machine (run_mame waits for a slot);
+    unset or empty, no limit. MameError for anything but a positive integer."""
+    n = os.environ.get("DAYTONA_MAME_JOBS", "")
+    if not n:
+        return None
+    try:
+        k = int(n)
+    except ValueError:
+        k = 0
+    if k <= 0:
+        raise MameError(f"DAYTONA_MAME_JOBS must be a positive integer, not {n!r}")
+    return k
+
+
+def running_daytona_mame() -> list[str]:
+    """`pid command` of every running MAME (a process named exactly one of MAME_NAMES: `pgrep -x` each, then `ps` for
+    the command lines) whose system is one of MAME_SYSTEMS; [] when there is none or pgrep is missing. Other
+    projects' MAME (vr, genesis, neogeo ...) is left out: it does not meet ours (each run has its own comm port)."""
     pids: list[str] = []
     try:
         for name in MAME_NAMES:
@@ -39,23 +65,25 @@ def running_mame() -> list[str]:
         return []
     try:
         ps = subprocess.run(["ps", "-o", "pid=,command=", "-p", ",".join(pids)], capture_output=True, text=True)
-        lines = [ln.strip() for ln in ps.stdout.splitlines() if ln.strip()]
     except FileNotFoundError:
-        lines = []
-    return lines or pids
+        return []
+    lines = [ln.strip() for ln in ps.stdout.splitlines() if ln.strip()]
+    return [ln for ln in lines if len(ln.split()) > 2 and ln.split()[2] in MAME_SYSTEMS]
 
 
-def wait_for_other_mame(timeout: float = MAME_WAIT, poll: float = MAME_POLL, *, sleep=None, clock=None) -> None:
-    """Return once no MAME process runs, checking every `poll` seconds; MameError naming the other process(es) when
-    one still runs after `timeout` seconds. `sleep` and `clock` default to time.sleep and time.monotonic."""
+def wait_for_mame_slot(jobs: int, timeout: float = MAME_WAIT, poll: float = MAME_POLL, *, sleep=None,
+                       clock=None) -> None:
+    """Return once fewer than `jobs` of this project's MAME run (running_daytona_mame), checking every `poll` seconds;
+    MameError naming them when `jobs` or more still run after `timeout` seconds. `sleep` and `clock` default to
+    time.sleep and time.monotonic. A soft limit: runs that check at the same moment can all start."""
     sleep = sleep or time.sleep
     clock = clock or time.monotonic
     deadline = clock() + timeout
-    while others := running_mame():
+    while len(ours := running_daytona_mame()) >= jobs:
         left = deadline - clock()
         if left <= 0:
-            raise MameError(f"another MAME is still running after {timeout:.0f} s (MAME runs one at a time; a second "
-                            f"instance exits -13); not started. Running: " + "; ".join(others))
+            raise MameError(f"DAYTONA_MAME_JOBS={jobs}: {len(ours)} daytona MAME run(s) still running after "
+                            f"{timeout:.0f} s; not started. Running: " + "; ".join(ours))
         sleep(min(poll, left))
 
 
@@ -73,18 +101,24 @@ def run_mame(script: Path, seconds: int, workdir: Path, rom_dir: Path, env: dict
     `mame` is the binary (a name on PATH or a path): `config.custom_mame()` for the custom build, whose None (not
     built) is a MameError here, as is anything that is not a str or Path; MAME is not started then.
 
-    Before starting, it waits up to `wait` seconds while another MAME process runs (wait_for_other_mame; MameError
-    naming it after that): parallel runs exit -13."""
+    Runs go in parallel, with other projects' MAME and with each other: each run listens on and connects to a comm
+    port of its own (free_port, local = remote, as a lone run on MAME's default 15112). Daytona switches its comm
+    board on at boot, so runs on the shared default port met and one died of SIGPIPE (exit -13; measured 2026-11-17,
+    three race tests at once). With DAYTONA_MAME_JOBS set (mame_jobs) it first waits up to `wait` seconds for a slot
+    (wait_for_mame_slot)."""
     if not isinstance(mame, (str, Path)) or not str(mame):
         raise MameError(f"mame must be the MAME binary (a str or Path), not {mame!r}: "
                         f"{'the custom build is not built (tools/build-mame.sh)' if mame is None else 'bad type'}")
-    wait_for_other_mame(wait)
+    if (jobs := mame_jobs()) is not None:
+        wait_for_mame_slot(jobs, wait)
+    port = str(free_port())
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     cmd = [str(mame), system, "-rompath", str(rom_dir), "-video", "none", "-sound", "none", "-window", "-nothrottle",
            "-skip_gameinfo", "-str", str(seconds), "-autoboot_script", str(script),
            "-snapshot_directory", str(workdir / "snap"), "-nvram_directory", str(workdir / "nvram"),
-           "-cfg_directory", str(workdir / "cfg"), *(extra_args or [])]
+           "-cfg_directory", str(workdir / "cfg"), "-comm_localport", port, "-comm_remoteport", port,
+           *(extra_args or [])]
     full_env = {**os.environ, "DAYTONA_LUA_DIR": str(LUA_DIR), **(env or {})}
     proc = subprocess.run(cmd, cwd=workdir, env=full_env, capture_output=True, text=True)
     if proc.returncode != 0 or "Average speed" not in proc.stdout:

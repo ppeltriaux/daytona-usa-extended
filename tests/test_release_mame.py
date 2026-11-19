@@ -137,9 +137,11 @@ def test_originals_on_release_set(tmp_path, romset_zip, disc):  # noqa: F811
     """The Global Constraint on the release set: entries 0-2 from its select race as the stock set's panels 0-2 on
     stock MAME, call for call (tests/test_mirrors_mame.py `originals_as_stock`: the same geometry display list on every
     frame from RACE_FROM, the same render-rate writes and video mode, pixel-identical race snapshots), so the names'
-    window and its draw branch add nothing to the race."""
+    window and its draw branch add nothing to the race. M9 stage 3: through the Course Direction screen (NORMAL),
+    against stock with its Mission Select step 52 frames later (autoplay DAYTONA_DIRECTION=late)."""
     from tests.test_mirrors_mame import originals_as_stock
-    originals_as_stock(tmp_path, romset_zip, _release(romset_zip, disc), ROW8)
+    originals_as_stock(tmp_path, romset_zip, _release(romset_zip, disc), {**ROW8, "DAYTONA_DIRECTION": "normal"},
+                       {"DAYTONA_DIRECTION": "late"})
 
 
 # --- Phase 12 Task 4: the Extended title --------------------------------------------------------------------------
@@ -268,11 +270,13 @@ _SHORT: dict = {}
 
 
 def _release_short(romset_zip, disc, title: bool = True) -> RomSet:  # noqa: F811
-    """release_set(..., long_ids=(), times=False) of the player's set and disc (the gates' set), with or without the title
-    (release_set's test-only `title`), built once per session."""
+    """release_set(..., long_ids=(), times=False, direction=False) of the player's set and disc (the gates' set: the
+    Phase 11 gates' frozen frames; the Course Direction screen only moves the race, test_race_after_screen_as_stock),
+    with or without the title (release_set's test-only `title`), built once per session."""
     key = (str(romset_zip), title)
     if key not in _SHORT:
-        _SHORT[key] = release_set(RomSet.from_zip(romset_zip), disc, long_ids=(), title=title, times=False)
+        _SHORT[key] = release_set(RomSet.from_zip(romset_zip), disc, long_ids=(), title=title, times=False,
+                                  direction=False)
     return _SHORT[key]
 
 
@@ -311,23 +315,29 @@ def test_release_gates(tmp_path, romset_zip, disc, course):  # noqa: F811
         assert not outside, outside[:8]
 
 
-RACE_TIMES_MARGIN = {3: 4257, 4: 3977, 5: 1452, 6: 3708, 7: 4157}
+RACE_TIMES_MARGIN = {3: 4260, 4: 4170, 5: 1452, 6: 3782, 7: 4056,
+                     8: 1848, 9: 204, 10: 1727, 11: 5036, 12: 4108, 13: 769, 14: 3600, 15: 4038}
 """Ticks left on the clock when the autopilot's player car crosses the lap line at the end of lap 1 (before the lap
-line's word is added), per converted course, on the release set (test_race_times_driven, measured 15 Nov 2026; GO at
-frame 1651 on all five). The autopilot laps about 25 % slower than the AI field's median (Desert City's lap 1: 4,497
+line's word is added), per converted course, on the release set (test_race_times_driven, measured 15 Nov 2026 with GO
+at frame 1651; re-measured 18 Nov 2026 through the Course Direction screen, GO at 1703 on all five: 4257, 3977, 3708
+and 4157 then. The release set without the screen with its Mission Select step 52 frames later gives these same
+margins and checkpoint frames: the AI field, which depends on the race's start frame, meets the autopilot elsewhere;
+the time tables are unchanged). Ids 8-15 (M9 stage 4) measured 18 Nov 2026 from the screen with REVERSE, GO at 1703
+(Three Seven Speedway in reverse 1937, Sea-Side Street Galaxy in reverse 1704). The autopilot laps about 25 % slower than the AI field's median (Desert City's lap 1: 4,497
 frames against the field's 3,569), so it is no reference for a whole race: docs/spike/2026-11-race-times.md."""
 
 
 @pytest.mark.mame
 @pytest.mark.custom_mame
-@pytest.mark.parametrize("course", (3, 4, 5, 6, 7))
+@pytest.mark.parametrize("course", (3, 4, 5, 6, 7) + tuple(range(8, 16)))
 def test_race_times_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
     """v0.1.2 (docs/superpowers/specs/2026-11-15-race-times-design.md, 7.5): on the release set, mode 0 difficulty 1,
     the autopilot drives entry `course` (the player car on the course's road line, dtools.mame.road.road_file) past the
     lap line of lap 1 with time left: the clock reads word 0 of build.RACE_TIMES at GO and counts down one tick a frame;
     at every checkpoint the player reaches on lap 1, then the lap line, it rises RISE_AFTER frames later by that pass's
     word (less the frame's tick); it never reaches 0 before the lap line. The ticks left at the lap line are printed and
-    must equal RACE_TIMES_MARGIN[course] once recorded."""
+    must equal RACE_TIMES_MARGIN[course] once recorded. M9 stage 4: ids 8-15 too, each entered from the Course
+    Direction screen with REVERSE (the entry of course n - 8), the autopilot on id n's own road line."""
     import math
     from dtools.arcade import golden as G
     from dtools.convert import build
@@ -337,15 +347,16 @@ def test_race_times_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
     from tests.test_custom_mame import _custom
     exe = _custom()
     rel = _release(romset_zip, disc)
-    assert S.ENTRIES[course].course == course
+    entry = next(k for k, e in enumerate(S.ENTRIES) if e.course == course % 8)
     c = G.decode_course(rel, course)
     words = c.time_tables[(C.DEFAULT_MODE, C.DEFAULT_DIFFICULTY)][2]
     assert words == build.race_table(*build.RACE_TIMES[course][(C.DEFAULT_MODE, C.DEFAULT_DIFFICULTY)], len(words))
     passes = len(c.checkpoints)                         # the checkpoints, then the lap line
     seconds = math.ceil(50 + sum(words[:passes + 1]) / 57.524)
     road = road_file(c, tmp_path / "road.txt")
-    env = {"DAYTONA_ROW": "8", "DAYTONA_ENTRY": str(course), "DAYTONA_AUTOPILOT": str(road),
-           "DAYTONA_AUTOPILOT_LAPS": "99", "DAYTONA_SNAPS": "0"}
+    env = {"DAYTONA_ROW": "8", "DAYTONA_ENTRY": str(entry), "DAYTONA_AUTOPILOT": str(road),
+           "DAYTONA_AUTOPILOT_LAPS": "99", "DAYTONA_SNAPS": "0",
+           "DAYTONA_DIRECTION": "reverse" if course >= 8 else "normal"}
     out = mame_build.run_set(rel, tmp_path, seconds, romset_zip, env, logs=("progress",), mame=exe)
     rows, timer = runner.parse_progress(out["progress"])
     go = next(f for f in sorted(timer) if f - 1 in timer and timer[f] < timer[f - 1])
@@ -374,9 +385,16 @@ def test_race_times_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
 # ---- the pit stops (v0.1.2) ----
 
 PIT_SECONDS = 170
-"""Emulated seconds per pit run: GO (frame 1651), the autopilot's first lap to the box (Desert City's lap 1 alone is
+"""Emulated seconds per pit run: GO (frame 1703 through the Course Direction screen; 1651 before), the autopilot's first lap to the box (Desert City's lap 1 alone is
 4,497 frames), then the stop (1,249-1,351 frames) and the 600 frames of driving after it the test reads (140 s ended
 inside Desert City's stop)."""
+PIT_AHEAD = {8: 10}
+"""The autopilot's look-ahead in segments (DAYTONA_AUTOPILOT_AHEAD; 6 otherwise): Three Seven Speedway in reverse enters
+its pit lane on a curve that ends at the box, and at 6 (or 2, 3) the car runs wide of the box polygon (z -72..-52) on
+every lap, at z -70..-80; at 10 it drives onto it (the stop 1,346 frames)."""
+PIT_SECONDS_LONG = {9: 205}
+"""Longer pit runs: Sea-Side Street Galaxy in reverse reaches its box at frame 9334 (the box late in a 991-segment lap), so the
+stop and the 600 frames after it end near frame 11,300 (170 s ended inside the stop at 9780)."""
 STALL_REACH = 2.0
 """World units: how far the stopped car may stand from its stall's last waypoint with a speed (stall 0's: the
 waypoint before the speed-0 one, which the car aims at while it brakes and never reaches)."""
@@ -395,7 +413,7 @@ def _pit_rows(path: Path) -> list[dict]:
 
 @pytest.mark.mame
 @pytest.mark.custom_mame
-@pytest.mark.parametrize("course", (0, 3, 4, 5, 6, 7))
+@pytest.mark.parametrize("course", (0, 3, 4, 5, 6, 7) + tuple(range(8, 16)))
 def test_pit_stop_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
     """v0.1.2: on the release set the autopilot drives entry `course` into the pit lane (dtools.mame.road.pit_road_file:
     the pit polygons' centres on the lane's segments) and the pit probe (pit_log.lua) logs the player car every frame.
@@ -408,7 +426,8 @@ def test_pit_stop_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
     (course.pit_stalls: a single cabinet is car ident 0); after it the car drives on (back to 0xdc64, at least 10
     segments in 600 frames). Beginner (entry 0) is the control: the arcade's own stalls. Before v0.1.2 every converted
     course read Beginner's stalls and the stop ended 7 frames after the box (spike/pit_drive.py; National Park Speedway:
-    0xe384 at 5000-5006, the pit word never counted)."""
+    0xe384 at 5000-5006, the pit word never counted). M9 stage 4: ids 8-15 too, each entered from the Course
+    Direction screen with REVERSE (entry n - 8), on its own stalls (build.pit_stalls(..., "R"))."""
     from dtools.arcade import golden as G, tgp
     from dtools.mame import build as mame_build
     from dtools.mame.road import pit_road_file
@@ -420,9 +439,13 @@ def test_pit_stop_driven(tmp_path, romset_zip, disc, course):  # noqa: F811
     stall = C.pit_stalls(rel, course)[0]
     last = max(j for j, w in enumerate(stall) if w.speed > 0)
     road = pit_road_file(c, g, tmp_path / "pit_road.txt")
-    env = {"DAYTONA_ROW": "8", "DAYTONA_ENTRY": str(course), "DAYTONA_AUTOPILOT": str(road),
-           "DAYTONA_AUTOPILOT_LAPS": "99", "DAYTONA_SNAPS": "0"}
-    out = mame_build.run_set(rel, tmp_path, PIT_SECONDS, romset_zip, env, logs=("pit",), mame=exe)
+    entry = next(k for k, e in enumerate(S.ENTRIES) if e.course == course % 8)
+    env = {"DAYTONA_ROW": "8", "DAYTONA_ENTRY": str(entry), "DAYTONA_AUTOPILOT": str(road),
+           "DAYTONA_AUTOPILOT_LAPS": "99", "DAYTONA_SNAPS": "0",
+           "DAYTONA_DIRECTION": "reverse" if course >= 8 else "normal",
+           **({"DAYTONA_AUTOPILOT_AHEAD": str(PIT_AHEAD[course])} if course in PIT_AHEAD else {})}
+    out = mame_build.run_set(rel, tmp_path, PIT_SECONDS_LONG.get(course, PIT_SECONDS), romset_zip, env, logs=("pit",),
+                             mame=exe)
     rows = _pit_rows(out["pit"])
     at = {r["frame"]: r for r in rows}
     start = next((r for r in rows if r["handler"] == 0xE288), None)

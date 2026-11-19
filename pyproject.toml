@@ -9,7 +9,7 @@ dependencies = ["numpy>=2", 'py7zr>=1.1; python_version < "3.15"']
 dtools = "dtools.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pillow>=10"]
+dev = ["pytest>=8", "pytest-xdist>=3.6", "pillow>=10"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -22,6 +22,6 @@ include = ["dtools*"]
 testpaths = ["tests"]
 addopts = "-q"
 markers = [
-    "mame: starts MAME (one instance at a time; skipped without mame on PATH; deselect with -m \"not mame\")",
+    "mame: starts MAME (runs in parallel, DAYTONA_MAME_JOBS caps them; skipped without mame on PATH; deselect with -m \"not mame\")",
     "custom_mame: needs the custom MAME build (tools/build-mame.sh; skipped when dtools.config.custom_mame() is None)",
 ]

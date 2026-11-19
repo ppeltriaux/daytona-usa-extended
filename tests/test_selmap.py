@@ -67,7 +67,7 @@ def test_selmap_pictures(romset_zip):
         obj, heads = M.course_map(grown, course)
         assert (obj, heads) == M.course_map(again, course)
         assert P.encode_object(obj) == P.encode_object(M.course_map(again, course)[0])
-        colours, pieces = M.map_paint(grown, course)
+        colours, pieces = M.facets(grown, course)                # v0.2: the faceted map (map_paint's strips before)
         entries = M.map_colours(grown, course)
         names = M.parts(pieces)
         assert len(heads) == 8 * len(names) == 8 * len(entries) and len(colours) == len(pieces) + 1
@@ -145,7 +145,7 @@ def test_selmap_pictures(romset_zip):
         with pytest.raises(S.SelectError):
             M.map_object(loop, bad)
     for bad in (16, -1, True, None):
-        for f in (M.course_map, M.map_colours, M.map_paint, M.paint, M.scenery_picture):
+        for f in (M.course_map, M.map_colours, M.map_paint, M.facets, M.paint, M.scenery_picture):
             with pytest.raises(S.SelectError):
                 f(grown, bad)
     for cells in (3, 0, 512, True, 64.0):
@@ -244,8 +244,8 @@ def test_selmap_painted(romset_zip, disc):  # noqa: F811
         assert M.paint_pieces(painting) == pieces
         assert set(colours) <= palette and len(colours) >= 3
         assert colours[0] == painting.colours[painting.order[0]] and colours[0] in M.OUTSIDE.values()
-        assert M.map_colours(rel, k)[:len(colours)] == tuple(TX.flat_entry(c, tables) for c in colours)
-        assert not set(M.map_colours(rel, k)) & set(TX.REWRITTEN)
+        assert M._entries(rel, colours)[:len(colours)] == tuple(TX.flat_entry(c, tables) for c in colours)
+        assert not set(M._entries(rel, colours)) & set(TX.REWRITTEN)
         drawn = {names[c // 3] for c, _ in pieces if c < 3 * len(names)}
         assert PAINTED_FAMILIES[k] <= drawn, (k, drawn)
         seen = painting.labels[~painting.road]
@@ -253,13 +253,11 @@ def test_selmap_painted(romset_zip, disc):  # noqa: F811
         assert {int(c) for c in np.flatnonzero(share >= 0.02)} <= {painting.order[0]} | {c for c, _ in pieces}, k
         got = _painted(painting.order[0], pieces, painting.cells)
         agree = (got == painting.labels)[~painting.road].mean()
-        obj, _ = M.course_map(rel, k)
-        polys = sum(1 for p in P.polygons(obj) if p.drawn)
         print(f"\ncourse {k} {e.name}: {level} cells, {len(colours)} colours, {sum(len(s) for _, s in pieces)} "
-              f"strips, {polys} drawn polygons ({len(obj.records)} records), {agree:.1%} of the cells as painted")
+              f"strips, {agree:.1%} of the cells as painted")
         assert agree >= 0.97, (k, agree)
-        assert polys == M.drawn_polygons(len(M.fit(C.road_line(rel, C.course_table(rel)[k]))), pieces)
-        assert polys <= M.PAINT_MAX_DRAWN
+        assert M.drawn_polygons(len(M.fit(C.road_line(rel, C.course_table(rel)[k]))), pieces) <= M.PAINT_MAX_DRAWN
+        # v0.2: course_map draws the faceted map over this painting's families (test_selmap_facets)
 
 
 def test_map_paint_fallback_and_refusal(romset_zip, monkeypatch):
@@ -279,3 +277,56 @@ def test_map_paint_fallback_and_refusal(romset_zip, monkeypatch):
     monkeypatch.setattr(M, "PAINT_MAX_DRAWN", 184)
     with pytest.raises(S.SelectError, match=r"course 0's map: more than 184 drawn polygons at 32 cells"):
         M.map_paint(grown, 0)
+
+
+def test_selmap_facets(romset_zip, disc):  # noqa: F811
+    """v0.2 (Pascal's pick C1 of spike/selmap_facets.py, Virtua Racing's method): each converted course's map as a
+    faceted landscape (`facets`) on the release set: deterministic; FACET_TRIANGLES triangles, each a strip of two
+    edges whose second is one point (a quad with two corners at one place), all wound alike and inside the quad, that
+    tile it (their areas sum to the quad's); every facet a FAMILIES shade, the ground the painting's (an OUTSIDE colour);
+    the natural ground mottled (its family in all three shades, each on 10 % of the facets or more); within
+    PAINT_MAX_DRAWN drawn polygons with the road strips, the frame and the stripe; `course_map` draws them (its drawn
+    polygons are `drawn_polygons` of them, its headers the facets' colours' palette entries, never one the game
+    rewrites)."""
+    from tests.test_release import _release
+    rel = _release(romset_zip, disc)
+    tables = T.colour_tables(rel)
+    shades = {c for f in M.FAMILIES.values() for c in f}
+    for e in S.ENTRIES[3:]:
+        k = e.course
+        colours, pieces = M.facets(rel, k)
+        assert (colours, pieces) == M.facets(rel, k)
+        assert colours[0] in M.OUTSIDE.values() and set(colours[1:]) <= shades
+        tris = [st for _, strips in pieces for st in strips]
+        assert len(tris) == M.FACET_TRIANGLES
+        areas = []
+        for (a, b), (c, d) in tris:
+            assert c == d and all(abs(v) <= M.QUAD for q in (a, b, c) for v in q)
+            areas.append(((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2)
+        assert all(s > 0 for s in areas) or all(s < 0 for s in areas), k
+        assert abs(sum(abs(s) for s in areas) - (2 * M.QUAD) ** 2) < 1e-6, (k, sum(abs(s) for s in areas))
+        count = {}
+        for c, strips in pieces:
+            count[c] = count.get(c, 0) + len(strips)
+        base = next(n for n, v in M.OUTSIDE.items() if v == colours[0])
+        fam = M.FAMILIES["sand" if base == "brown" else base]
+        assert all(count.get(s, 0) >= 0.10 * M.FACET_TRIANGLES for s in fam), (k, base, count)
+        points = len(M.fit(C.road_line(rel, C.course_table(rel)[k])))
+        assert M.drawn_polygons(points, pieces) <= M.PAINT_MAX_DRAWN
+        obj, heads = M.course_map(rel, k)
+        assert sum(1 for p in P.polygons(obj) if p.drawn) == M.drawn_polygons(points, pieces)
+        entries = [TX.flat_entry(c, tables) for c in colours]
+        assert heads[:8 * len(entries)] == M.map_headers(entries) and not set(entries) & set(TX.REWRITTEN)
+        print(f"\ncourse {k} {e.name}: {len(tris)} facets in {len(pieces)} colours, "
+              f"{M.drawn_polygons(points, pieces)} drawn polygons")
+
+
+def test_course_map_painted_or_faceted(romset_zip):
+    """`course_map(..., faceted=False)` is v0.1.2's map (`map_object` of the painting's strips, `map_paint`, and their
+    colours' headers), the default the faceted one (`facets`, v0.2): on the grown set's course 3, different objects."""
+    grown = _grown(romset_zip)
+    road = M._road(grown, 3)
+    colours, pieces = M.map_paint(grown, 3)
+    old = M.course_map(grown, 3, faceted=False)
+    assert old == (M.map_object(M.fit(road), tuple(st for _, st in pieces)), M.map_headers(M._entries(grown, colours)))
+    assert M.course_map(grown, 3) != old and M.course_map(grown, 3, faceted=True) == M.course_map(grown, 3)

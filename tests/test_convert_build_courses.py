@@ -1713,3 +1713,33 @@ def test_m5b_set_pinned(disc):  # noqa: F811
         pytest.skip("set DAYTONA_ROMDIR to a directory containing daytona.zip")
     s = m5b_set(rs, disc)
     assert {r: hashlib.sha1(getattr(s, r)).hexdigest() for r in M5B_SHA1} == M5B_SHA1
+
+
+# ---- M9 stage 1: Desert City in reverse at id 11 ----
+
+def test_reverse_desert_city_id11(disc, pixie_id5):  # noqa: F811
+    """Desert City in reverse at id 11 on the shipped chain (the five converted: pixie_id5's set), with its own R
+    scenery (converted_set(..., 3, slot=11, variant="R", scenery="model")): id 11 decodes and golden.check_course
+    passes; its road is CSDAT3R's (as many segments), its checkpoints are dc.exe.checkpoints(exe, 3, "R"), every step
+    and checkpoint segment lies on the reverse road, its grid base is dc.exe.grid_base(exe, 3, "R"), its pit run is
+    one run of the reverse road; ids 0-10 and 12-15 decode as before the step."""
+    from dtools.dc import exe as X
+    from dtools.dc.data import decode_data
+    from dtools.dc.disc import course_files
+    before = pixie_id5[3]
+    after = build.converted_set(before, disc, 3, slot=11, variant="R", scenery="model")
+    blob = disc.read(X.EXE_NAME)
+    name = course_files(3, "R", "data")
+    d = decode_data(disc.read(name), name)
+    c11 = G.decode_course(after, 11)
+    G.check_course(c11, after)
+    assert len(c11.road) == len(d.road) and len(c11.road) != 0
+    assert [cp.segment for cp in c11.checkpoints if not cp.lap_line] == list(X.checkpoints(blob, 3, "R"))
+    assert X.checkpoints(blob, 3, "R") != X.checkpoints(blob, 3)
+    assert max(s.segment for s in c11.steps) < len(c11.road)
+    assert all(cp.segment < len(c11.road) for cp in c11.checkpoints)
+    assert c11.grid_base[1] == X.grid_base(blob, 3, "R")
+    assert c11.pit is not None and c11.pit.box_segment < len(c11.road)
+    from tests.test_golden import _differ
+    for k in [k for k in range(16) if k != 11]:
+        assert not _differ(G.decode_course(after, k), G.decode_course(before, k)), k

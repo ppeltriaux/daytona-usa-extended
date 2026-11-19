@@ -2540,11 +2540,13 @@ def test_converted_id3_refuses(desert_id3, disc):  # noqa: F811
             build.converted_set(s, disc, 3, slot=3)
     with pytest.raises(ConvertError, match="empty"):
         build.converted_course(base, d, exe, 3, slot=3, scenery="empty")
-    for slot in (True, 8, 2, 1.0, None):                 # 4, 5: converted ids (Phase 10 Task 3, Phase 11 Task 4)
-        with pytest.raises(ConvertError, match="slot"):
+    for slot in (True, 16, 2, 1.0, None):                # 4, 5: converted ids (Phase 10 Task 3, Phase 11 Task 4);
+        with pytest.raises(ConvertError, match="slot"):  # 8-15: reverse ids (M9), refused below for a plain course
             build.converted_course(base, d, exe, 3, slot=slot)
         with pytest.raises(ConvertError, match="slot"):
             build.model_scenery(base, d, pol.Model((), (), ()), b"", slot=slot)
+    with pytest.raises(ConvertError, match="slot 8: a reverse id"):
+        build.converted_course(base, d, exe, 3, slot=8)
     lay = build.Layout(DATA_LO, COPRO_LO, build.PROGRAM_FREE[0], sheet_at=0x1100000)
     with pytest.raises(ConvertError, match="sheet_at"):
         build.converted_course(rs, d, exe, 3, layout=lay)
@@ -2965,3 +2967,48 @@ def test_mirror_writes_the_empty_table(rs):
     assert out.program[own + n:PROG_HI] == s.program[own + n:PROG_HI]
     assert build.program_room(out) == build.program_room(s)
     assert G.verify_lossless(out, 8) == []
+
+
+# ---- the reverse variant (M9 stage 1) ----
+
+def test_reverse_variant_refusals(disc, rs):
+    """converted_set's variant: "" or "R"; "R" fills only the reverse id n + 8 (REVERSE_IDS), "" never a reverse id;
+    the arcade's three (n 0-2) are refused in reverse (their scenery is the arcade's: stage 2). Refused before any
+    file is read."""
+    g = C.guard_new_ids(C.grow_ids(rs))
+    assert build.REVERSE_IDS == tuple(range(8, 16))
+    for kw in ({"slot": 11, "variant": ""}, {"slot": 11}, {"slot": 3, "variant": "R"}, {"slot": 12, "variant": "R"},
+               {"slot": 0, "variant": "R"}, {"slot": 11, "variant": "M"}, {"slot": 11, "variant": None}):
+        with pytest.raises(ConvertError, match="variant|slot"):
+            build.converted_set(g, disc, 3, scenery="model", **kw)
+    with pytest.raises(ConvertError, match="arcade|stage 2"):
+        build.converted_set(g, disc, 0, slot=8, variant="R", scenery="model")
+    with pytest.raises(ConvertError, match="slot"):
+        build.converted_set(rs, disc, 3, slot=11, variant="R")         # not grown: no id 11 of its own
+
+
+def test_reverse_variant_reads_the_r_files(disc, rs, monkeypatch):
+    """converted_set(..., 3, slot=11, variant="R", scenery="model") reads CSDAT3R.BIN, the plain CS_DATA3.BIN (the
+    ground's lender, handed to converted_course as `plain`: M9 stage 2, step 3), 1ST_READ.BIN, CS3R_POL.BIN and
+    CS3R_TEX.BIN, never the plain model or textures, and hands converted_course the variant (the conversion itself
+    stubbed after the reads)."""
+    g = C.guard_new_ids(C.grow_ids(rs))
+    read, seen = [], {}
+    real = disc.read
+    monkeypatch.setattr(disc, "read", lambda name: read.append(name) or real(name))
+    budget = {}
+    monkeypatch.setattr(build, "model_scenery", lambda rs_, d, m, t, thin, **k: budget.update(k, thin=thin) or "scenery")
+    monkeypatch.setattr(build, "converted_course", lambda *a, **k: seen.update(k) or "course")
+    monkeypatch.setattr(build, "encode", lambda s, c, fields: s)
+    monkeypatch.setattr(build, "ROAD_COPY", {3: (16.0, 10.0)})        # v0.2: a course's road copy, both directions
+    build.converted_set(g, disc, 3, slot=11, variant="R", scenery="model", road_copy=True)
+    assert read == ["CSDAT3R.BIN", "CS_DATA3.BIN", "1ST_READ.BIN", "CS3R_POL.BIN", "CS3R_TEX.BIN"]
+    assert budget["road_copy"] == (16.0, 10.0)
+    budget.clear()
+    build.converted_set(g, disc, 3, slot=11, variant="R", scenery="model")       # the default: no copy (the old pins)
+    assert budget["road_copy"] is None
+    assert seen["variant"] == "R" and seen["slot"] == 11 and seen["plain"] is not None
+    # the reverse model's own budget settings (REVERSE_*), never the plain model's per-object THIN / NAMED_PROPS
+    assert budget["thin"] == build.REVERSE_THIN.get(3) and budget["thin"] != build.THIN[3]
+    assert budget["quad"] == build.REVERSE_QUAD.get(3) and budget["remesh"] == build.REVERSE_REMESH.get(3)
+    assert budget["props"] == build.REVERSE_NAMED_PROPS.get(3, ()) and budget["cell_cut"] == build.CELL_CUT.get(3)

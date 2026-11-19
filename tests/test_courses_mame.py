@@ -197,6 +197,9 @@ class Gate(NamedTuple):
     snaps: dict
     autopilot: int = 0
     attract: tuple = ()
+    budget: str = "thin"               # "thin": a converted course (standing start, no actors, BAR - THIN_MARGIN);
+                                       # "bar": an arcade course's scenery (M9 ids 8-10: BAR and no cap hit, Pascal)
+    left_out: frozenset = frozenset()  # frames whose list may leave a visible cell's scenery out (the race's load)
 
 
 def park_gate(dest: str = "task3") -> Gate:
@@ -245,7 +248,8 @@ def _gate(tmp_path, romset_zip, full: RomSet, g: Gate, untitled: RomSet | None =
     row = S.select_row(full)
     assert row.records[0][g.entry].course == g.course and row.live[g.entry]
     row_env = {"DAYTONA_ROW": "8"} if len(row.live) == 8 else {}    # a row of 16: autoplay.lua's default
-    assert c.rolling_start[1] is False and c.actor_table == build.EMPTY_ACTORS
+    if g.budget == "thin":
+        assert c.rolling_start[1] is False and c.actor_table == build.EMPTY_ACTORS
     owner = {p.oba: cell for cell, lst in enumerate(c.cells) for p in c.object_lists[lst]}
     occupied = set(owner.values())
     dest = SNAP_DIR / g.dest
@@ -290,7 +294,7 @@ def _gate(tmp_path, romset_zip, full: RomSet, g: Gate, untitled: RomSet | None =
                   lap_end=min((f for f, (n, _) in player.items() if f > g.go and n == 1), default=None),
                   max=(per[top][0], top, player[top][1]), count_max=(cells[busiest][0], busiest),
                   over=sum(per[f][0] > BAR for f in lap), cap_hits=sum(cells[f][0] >= C.OBC for f in lap),
-                  left_out=len(left_out), strays=len(strays), margin=BAR - per[top][0])
+                  left_out=len(left_out), left_out_at=left_out[:12], strays=len(strays), margin=BAR - per[top][0])
     print(f"\nlong-time run: {report}")
     _drive_checks("long_time", c, run, calls_long_time=g.calls_long_time, go=g.go, repeat=g.repeat,
                   long_laps=g.long_laps)
@@ -298,8 +302,9 @@ def _gate(tmp_path, romset_zip, full: RomSet, g: Gate, untitled: RomSet | None =
     assert {player[f][1] for f in lap} == set(range(len(c.road)))
     assert set(lap) - g.repeat <= _new_lists(rate)
     assert set(lap) <= set(per) and set(lap) <= set(cells)
-    assert not left_out and not strays and report["over"] == report["cap_hits"] == 0
-    assert per[top][0] <= BAR - THIN_MARGIN and cells[busiest][0] <= C.OBC - THIN_MARGIN, report
+    assert set(left_out) <= g.left_out and not strays and report["over"] == report["cap_hits"] == 0, report
+    if g.budget == "thin":
+        assert per[top][0] <= BAR - THIN_MARGIN and cells[busiest][0] <= C.OBC - THIN_MARGIN, report
     assert (per[top][0], top, cells[busiest][0]) == g.maximum
     _check_fresh_sram((tmp_path / "long_time" / "run" / "nvram" / "daytona" / "backup1").read_bytes(), full)
 
@@ -318,7 +323,8 @@ def _gate(tmp_path, romset_zip, full: RomSet, g: Gate, untitled: RomSet | None =
         samples, _ = runner.parse_ground(o["ground"])
         rows, s_timer = runner.parse_progress(o["progress"])
         sessions[first] = dict(lists=lists, refs=refs, tex=wd / "tex", timer=s_timer, out=o,
-                               run=(samples, runner.parse_rate(o["rate"]), _cars(rows), s_timer),
+                               run=(samples, runner.parse_rate(o["rate"]),        # the first game's cars only
+                                    _cars([r for r in rows if r.frame < SESSION_COIN2]), s_timer),
                                slots=runner.parse_ground_slots(o["ground"]),
                                sram=(wd / "run" / "nvram" / "daytona" / "backup1").read_bytes())
     a, b = sessions[g.entry], sessions[0]

@@ -1459,6 +1459,117 @@ PIT_WAYPOINT_SIZE = 16
 PIT_STALLS_SIZE = 4 * PIT_STALLS + PIT_STALLS * PIT_WAYPOINTS * PIT_WAYPOINT_SIZE
 """encode_pit_stalls' bytes: the eight stall pointers, then the stalls."""
 
+# The pit stop's angle differences (M9 stage 4): each subtracts two 16-bit angles loaded sign-extended (ldis) and
+# compares the 32-bit difference, so near +-0x8000 the answer depends on which side of the wrap each angle lies.
+# Dinosaur Canyon and Desert City in reverse (ids 10, 11) have their box polygon's direction (+0x1c6) at -32768: in
+# MAME a car heading due south with a yaw of +32522 drove over the box with no stop (the trigger), and once the stop started it
+# ran through the stall's seven waypoints in 238 frames, the car never standing (the passed test: a waypoint dead
+# ahead at +32700 more than a quarter turn from -32768). No original box lies within 0x17ff of the wrap. The patch
+# keeps each difference's low 16 bits with shlo 16 then shro 16 (unsigned) or shri 16 (signed); MAME's i960 has no
+# `extract` ("Unhandled 65.1"). Each site keeps its stock length; branches land where the stock ones did.
+
+PIT_TRIGGER_RET, PIT_STEER_HELD, PIT_PASSED = 0xE038, 0xE7C4, 0xE82C
+"""The trigger's ret (outside the window), the steering's end of the clamp, the passed test's waypoint step."""
+
+
+def _pit_trigger(patched: bool) -> bytes:
+    """0xdfd0-0xdffb: car +0x48 - box +0x1c6 + 0x3fff held to 0x2800..0x47ff (the car within [-0x17ff, +0x800] of
+    the box's direction), else to the ret."""
+    b = i960.Block(0xDFD0)
+    b.reg("subi", "r4", "r3", "r3")
+    if patched:
+        b.mem("lda", "r3", 0x3FFF, "r3")
+        b.reg("shlo", 16, "r3", "r3")
+        b.reg("shro", 16, "r3", "r3")
+        b.reg("shlo", 11, 5, "r5")
+        b.cobr("cmpibl", "r3", "r5", PIT_TRIGGER_RET)
+        b.mem("lda", "r5", 0x47FF)
+        b.cobr("cmpibg", "r3", "r5", PIT_TRIGGER_RET)
+        b.reg("mov", "r3", "r3")                # the stock length: one word to spare
+    else:
+        b.mem("lda", "r5", 0x3FFF)
+        b.reg("addi", "r5", "r3", "r3")
+        b.reg("shlo", 11, 5, "r5")
+        b.reg("cmpi", "r3", "r5")
+        b.ctrl("bl", PIT_TRIGGER_RET)
+        b.mem("lda", "r5", 0x47FF)
+        b.reg("cmpi", "r3", "r5")
+        b.ctrl("bg", PIT_TRIGGER_RET)
+    return b.bytes()
+
+
+def _pit_steer(patched: bool) -> bytes:
+    """0xe798-0xe7c3: the turn to the waypoint, its angle r5 - the car's yaw +0x48, held to -0x80..0x80 (r6). The
+    stock `mov 0,g14` at 0xe798 is dropped in the patched form: g14 is set to -0x80 before it is read, and to 0 again
+    at 0xe7c4."""
+    b = i960.Block(0xE798)
+    if not patched:
+        b.reg("mov", 0, "g14")
+    b.mem("ldis", "r4", 0x48, "g13")
+    b.reg("subi", "r4", "r5", "r6")
+    if patched:
+        b.reg("shlo", 16, "r6", "r6")
+        b.reg("shri", 16, "r6", "r6")
+    b.mem("lda", "g14", 0xFFFFFF80)
+    if patched:                                 # held low, it is under 0x80: the second compare passes it through
+        b.cobr("cmpible", "g14", "r6", "high")
+        b.reg("mov", "g14", "r6")
+    else:
+        b.cobr("cmpible", "g14", "r6", "high")
+        b.reg("mov", "g14", "r6")
+        b.ctrl("b", PIT_STEER_HELD)
+    b.label("high")
+    b.reg("shlo", 7, 1, "g14")
+    b.cobr("cmpibge", "g14", "r6", PIT_STEER_HELD)
+    b.reg("mov", "g14", "r6")
+    return b.bytes()
+
+
+def _pit_passed(patched: bool) -> bytes:
+    """0xe7fc-0xe827: the waypoint's angle r5 - box +0x1c6 + 0x3fff outside 0..0x7fff (more than a quarter turn from
+    the box's direction) steps to the next waypoint, else ret."""
+    b = i960.Block(0xE7FC)
+    b.mem("ldis", "r4", 0x1C6, "g13")
+    b.reg("subi", "r4", "r5", "r3")
+    if patched:
+        b.mem("lda", "r3", 0x3FFF, "r3")
+        b.reg("shlo", 16, "r3", "r3")
+        b.reg("shro", 16, "r3", "r3")             # 0..0xffff: never below 0
+        b.mem("lda", "r6", 0x7FFF)
+        b.cobr("cmpibg", "r3", "r6", PIT_PASSED)
+        b.reg("mov", "r3", "r3")
+        b.reg("mov", "r3", "r3")                # the stock length: two words to spare
+    else:
+        b.mem("lda", "r6", 0x3FFF)
+        b.reg("addi", "r6", "r3", "r3")
+        b.reg("cmpi", "r3", 0)
+        b.ctrl("bl", PIT_PASSED)
+        b.mem("lda", "r6", 0x7FFF)
+        b.reg("cmpi", "r3", "r6")
+        b.ctrl("bg", PIT_PASSED)
+    return b.bytes()
+
+
+PIT_HEADING_SITES = {at: (f(False), f(True)) for at, f in
+                     ((0xDFD0, _pit_trigger), (0xE798, _pit_steer), (0xE7FC, _pit_passed))}
+"""Program offset -> (stock bytes, patched bytes) of the pit stop's three angle differences (patch_pit_heading)."""
+
+
+def patch_pit_heading(rs: RomSet) -> RomSet:
+    """`rs` with every PIT_HEADING_SITES site patched, or `rs` itself when all are already. CourseError for other bytes
+    at a site, or some sites patched and others not."""
+    got = {at: bytes(rs.program[at:at + len(old)]) for at, (old, _) in PIT_HEADING_SITES.items()}
+    state = {at: "patched" if got[at] == new else "stock" if got[at] == old else None
+             for at, (old, new) in PIT_HEADING_SITES.items()}
+    bad = [f"{at:#x}" for at, st in state.items() if st is None]
+    if bad:
+        raise CourseError(f"the pit stop's angle code at {', '.join(bad)} is neither the stock nor the patched one")
+    if set(state.values()) == {"patched"}:
+        return rs
+    if "patched" in state.values():
+        raise CourseError(f"the pit stop's angle code is patched at only some sites: {state}")
+    return rs.with_patches({("program", at): new for at, (_, new) in PIT_HEADING_SITES.items()})
+
 
 class PitWaypoint(NamedTuple):
     """One waypoint of a pit stall: where the car steers (x, z, world units) and the speed it is set to (the third

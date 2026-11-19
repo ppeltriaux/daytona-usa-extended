@@ -13,7 +13,11 @@
 -- before that coin, which must land in the attract mode), DAYTONA_AUTOPILOT (a file of "x z" lines, one per road
 -- segment: the road line's centre in the arcade's frame; from the gas on, the paddle steers the player's car instead
 -- of staying centred, see "The autopilot" below), DAYTONA_AUTOPILOT_LAPS (with DAYTONA_AUTOPILOT: once the player's
--- lap count reaches it, the gas is let go and the paddle centred; default never).
+-- lap count reaches it, the gas is let go and the paddle centred; default never), DAYTONA_DIRECTION (a set with the
+-- Course Direction screen, dtools/arcade/dirscreen.py: "normal" the gas on it with the paddle centred, "reverse" the
+-- paddle centred then right then the gas, "held" the paddle right from the mission paddle's frame on (never back at centre on the
+-- screen: NORMAL by the D6 rule) then the gas, "idle" no gas (the timer's end takes NORMAL); every later frame of the
+-- game (the mission step, the gas, the race, the default snapshots) moves by DIR_SHIFT[mode]; unset: no screen).
 -- Runs select_log.lua when DAYTONA_SELECT_LOG is set (see there).
 -- Runs memtrace.lua when DAYTONA_TRACE_LOG is set (see there; refuses to run with the two below).
 -- Runs texdump.lua when DAYTONA_TEXDUMP_DIR is set (see there).
@@ -24,6 +28,7 @@
 -- Runs cells_log.lua when DAYTONA_CELLS_LOG is set (see there; refused with DAYTONA_TRACE_LOG).
 -- Runs pit_log.lua when DAYTONA_PIT_LOG is set (see there).
 -- Runs title_log.lua when DAYTONA_TITLE_LOG is set (see there).
+-- Runs dir_log.lua when DAYTONA_DIR_LOG is set (see there).
 --
 -- What the game does (measured 2026-11-07, MAME 0.289, fresh NVRAM; snapshots read by eye):
 --   frames 1-~500  boot: the operator settings page (LINK ID MASTER, CABINET TWIN, COUNTRY JPN), "NETWORK CHECKING".
@@ -57,6 +62,7 @@ if os.getenv("DAYTONA_GEO_LOG") and lua_dir then dofile(lua_dir .. "/geo_log.lua
 if os.getenv("DAYTONA_RATE_LOG") and lua_dir then dofile(lua_dir .. "/renderrate.lua") end
 if os.getenv("DAYTONA_CELLS_LOG") and lua_dir then dofile(lua_dir .. "/cells_log.lua") end
 if os.getenv("DAYTONA_PIT_LOG") and lua_dir then dofile(lua_dir .. "/pit_log.lua") end
+if os.getenv("DAYTONA_HOLES_LOG") and lua_dir then dofile(lua_dir .. "/holes_log.lua") end
 if os.getenv("DAYTONA_TRACE_LOG") and lua_dir then
   if os.getenv("DAYTONA_GEO_LOG") or os.getenv("DAYTONA_RATE_LOG") then
     error("DAYTONA_TRACE_LOG cannot be combined with DAYTONA_GEO_LOG or DAYTONA_RATE_LOG")
@@ -66,6 +72,7 @@ end
 if os.getenv("DAYTONA_TEXDUMP_DIR") and lua_dir then dofile(lua_dir .. "/texdump.lua") end
 if os.getenv("DAYTONA_SELECT_LOG") and lua_dir then dofile(lua_dir .. "/select_log.lua") end
 if os.getenv("DAYTONA_TITLE_LOG") and lua_dir then dofile(lua_dir .. "/title_log.lua") end
+if os.getenv("DAYTONA_DIR_LOG") and lua_dir then dofile(lua_dir .. "/dir_log.lua") end
 
 local function field(tag, name)
   local port = manager.machine.ioport.ports[tag]
@@ -128,18 +135,48 @@ local mission_from = coin_at + 200           -- the paddle moves to Automatic / 
 local mission_step = coin_at + 360           -- 2026-11-07: a step at 960 starts the race (GO at ~1650)
 -- 2026-11-07: the race HUD is up from ~1330; the gas is held and the paddle centred from here to the end. Keep it
 -- after the mission step (coin + 370): a pedal already held down does not register the step.
-local gas_from = tonumber(os.getenv("DAYTONA_GAS_FROM") or tostring(coin_at + 700))
+-- The Course Direction screen (DAYTONA_DIRECTION; measured 2026-11-18 on the release set with it): its first frame is
+-- coin + 327 (the wipe's end, where Mission Select began); the gas counts there from its 17th frame, so DIR_STEP
+-- presses it at coin + 345 (the choice taken at coin + 348); the 32-frame hold then opens Mission Select DIR_SHIFT
+-- frames later than without the screen
+-- (the timer's end, "idle": 640 frames on).
+local direction = os.getenv("DAYTONA_DIRECTION")
+-- "late" (a set without the screen): every later step moved by LATE, the race beginning on the frame it does after
+-- the screen's "normal": the stock game, its Mission Select step later by the screen's length (the screen's set-up and
+-- Mission Select's after it each fold a frame into the one before, so 52, not 54: measured 2026-11-18, the race then
+-- identical to the screen's call for call, tests/test_dirscreen_mame.py test_race_after_screen_as_stock).
+local LATE = 52
+local DIR_SHIFT = {normal = 54, reverse = 54, held = 54, idle = 673, late = LATE}
+local dir_shift = 0
+if direction then
+  dir_shift = DIR_SHIFT[direction] or error("DAYTONA_DIRECTION must be normal, reverse, held, idle or late")
+end
+local dir_step = coin_at + 345
+local dir_right = coin_at + 335                -- "reverse": the paddle right from here (armed by the centred paddle)
+-- DAYTONA_DIR_HOLD (frames, the page's media): the screen held that much longer before the step, everything after it
+-- that much later; with at least 120, "reverse" turns the paddle right 120 frames before the step (NORMAL lit first,
+-- then REVERSE). Within the screen's 640-frame timer. Unset: 0.
+local dir_hold = tonumber(os.getenv("DAYTONA_DIR_HOLD") or "0")
+if dir_hold > 0 then
+  if not direction or direction == "idle" or direction == "late" then error("DAYTONA_DIR_HOLD needs a direction step") end
+  if dir_hold > 560 then error("DAYTONA_DIR_HOLD past the screen's timer") end
+  dir_step, dir_shift = dir_step + dir_hold, dir_shift + dir_hold
+  if dir_hold >= 120 then dir_right = dir_step - 120 end
+end
+mission_step = mission_step + dir_shift
+local gas_from = tonumber(os.getenv("DAYTONA_GAS_FROM") or tostring(coin_at + 700 + dir_shift))
 -- 2026-11-07: the race begins (green light / GO!) at 1645 on Advanced and Expert, at 1890 on Beginner.
 local RACE = {[0] = coin_at + 1290, [1] = coin_at + 1045, [2] = coin_at + 1045}
 -- With DAYTONA_ENTRY (ENTRIES' order): entries 1 and 2 are Advanced and Expert, entry 3 Desert City (standing start:
 -- the race begins with Expert's countdown, 2026-11-09), the others Beginner's data (rolling start).
-local race_at = entry and ((entry >= 1 and entry <= 3) and RACE[1] or RACE[0]) or RACE[course] or RACE[1]
+local race_at = (entry and ((entry >= 1 and entry <= 3) and RACE[1] or RACE[0]) or RACE[course] or RACE[1]) + dir_shift
 local steps = {}
 if os.getenv("DAYTONA_STEPS") then
   for f in string.gmatch(os.getenv("DAYTONA_STEPS"), "%d+") do steps[tonumber(f)] = true end
 else
   steps[course_step] = true
   steps[mission_step] = true
+  if direction and direction ~= "idle" and direction ~= "late" then steps[dir_step] = true end
 end
 -- The second game (DAYTONA_SECOND): the first game's script again from its coin, on its own entry or course.
 local second = os.getenv("DAYTONA_SECOND")
@@ -161,7 +198,7 @@ end
 local releases = {}
 for f in pairs(steps) do releases[f + 10] = true end
 local snaps = {}                              -- Circuit Select with the cursor placed, Mission Select, race + 20 s
-local default_snaps = string.format("%d,%d,%d", coin_at + 150, coin_at + 350, race_at + 1150)   -- 57.52 Hz
+local default_snaps = string.format("%d,%d,%d", coin_at + 150, coin_at + 350 + dir_shift, race_at + 1150)   -- 57.52 Hz
 for f in string.gmatch(os.getenv("DAYTONA_SNAPS") or default_snaps, "%d+") do snaps[tonumber(f)] = true end
 
 -- The autopilot (DAYTONA_AUTOPILOT; Phase 10 Task 4: Mermaid Lake's gate drives one lap at race pace, then stops;
@@ -172,7 +209,8 @@ for f in string.gmatch(os.getenv("DAYTONA_SNAPS") or default_snaps, "%d+") do sn
 -- turn the signed angle (radians, atan2 of the x-z cross and dot products) from the motion to that point (its sign
 -- measured: from +z towards +x is a paddle above 0x80), held within AP_LOCK of the centre, centred below AP_SLOW units
 -- a frame (the standing start). It reads the emulated state only, so a run is as deterministic as without it.
-local AP_AHEAD, AP_GAIN, AP_LOCK, AP_SLOW, AP_SMOOTH = 6, 160, 0x60, 0.05, 0.5
+-- DAYTONA_AUTOPILOT_AHEAD overrides AP_AHEAD (the pit-stop test on Three Seven Speedway in reverse: 10).
+local AP_AHEAD, AP_GAIN, AP_LOCK, AP_SLOW, AP_SMOOTH = tonumber(os.getenv("DAYTONA_AUTOPILOT_AHEAD") or "6"), 160, 0x60, 0.05, 0.5
 local autopilot, ap_laps = nil, tonumber(os.getenv("DAYTONA_AUTOPILOT_LAPS") or "")
 if os.getenv("DAYTONA_AUTOPILOT") then
   autopilot = {}
@@ -226,7 +264,13 @@ emu.register_frame_done(function()
     end
   elseif frame >= wheel_from and frame < gas_from then
     local lead = entry and LEAD[entry] and not os.getenv("DAYTONA_WHEEL") and frame < wheel_from + LEAD_IN
-    wheel:set_value(frame < mission_from and (lead and ENTRY_WHEEL[LEAD[entry]] or wheel_pos) or gear_wheel)
+    local w = frame < mission_from and (lead and ENTRY_WHEEL[LEAD[entry]] or wheel_pos) or gear_wheel
+    if direction == "reverse" and frame >= mission_from and frame < dir_step + 10 then
+      w = frame < dir_right and 0x80 or GEAR_WHEEL.manual     -- centred (armed), then right
+    elseif direction == "held" and frame >= mission_from and frame < dir_step + 10 then
+      w = GEAR_WHEEL.manual                    -- right throughout: never armed
+    end
+    wheel:set_value(w)
   end
   if steps[frame] then accel:set_value(0xe0)
   elseif releases[frame] then accel:set_value(0x20) end

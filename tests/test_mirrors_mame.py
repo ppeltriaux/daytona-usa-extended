@@ -992,10 +992,12 @@ def test_originals_on_final_set(tmp_path, romset_zip, disc):  # noqa: F811
     originals_as_stock(tmp_path, romset_zip, final_set(RomSet.from_zip(romset_zip), disc))
 
 
-def originals_as_stock(tmp_path, romset_zip, full: RomSet, row: dict | None = None) -> None:
+def originals_as_stock(tmp_path, romset_zip, full: RomSet, row: dict | None = None,
+                       stock_env: dict | None = None) -> None:
     """test_originals_on_final_set's checks on the set `full`: entries 0-2 from its select (autoplay.lua's
     DAYTONA_ENTRY, with `row`'s env: {"DAYTONA_ROW": "8"} for a row of 8) against the stock set's panels 0-2 on stock
-    MAME."""
+    MAME (with `stock_env`'s env: a set with the Course Direction screen races 52 frames later, stock with
+    DAYTONA_DIRECTION=late)."""
     from dtools.mame import build as mame_build
     from dtools.mame import runner
     from tests.test_sixteen_mame import RACE_FROM, RACE_SNAPS, RATE_HASH_FROM
@@ -1003,7 +1005,7 @@ def originals_as_stock(tmp_path, romset_zip, full: RomSet, row: dict | None = No
     env = {"DAYTONA_GEO_FROM": str(RACE_FROM), "DAYTONA_GEO_EVERY": "1", "DAYTONA_SNAPS": RACE_SNAPS}
     for k in range(3):
         got = {}
-        for name, s, binary, sel in (("stock", None, "mame", {"DAYTONA_COURSE": str(k)}),
+        for name, s, binary, sel in (("stock", None, "mame", {"DAYTONA_COURSE": str(k), **(stock_env or {})}),
                                      ("final", full, exe, {"DAYTONA_ENTRY": str(k), **(row or {})})):
             out = mame_build.run_set(s, tmp_path / f"{k}-{name}", SECONDS, romset_zip, {**sel, **env},
                                      logs=("geo", "rate"), mame=binary)
@@ -1090,16 +1092,23 @@ fresh NVRAM (the stock set, Phase 8's, the final set: 1,683, Phase 1's figure), 
 Beginner booted on an SRAM that passes the signature check (no reset at boot: the stock set and the final set alike,
 6 frames quicker)."""
 RANKING_WRITER_IPS = frozenset({0x227458, 0x2274A0, 0x2274C0, 0x2274CC, 0x2274D8, 0x227534, 0x227538, 0x227544,
-                                0x227548, 0x227554, 0x227558, 0x227564, 0x227568, 0x227574, 0x227578, 0x227590})
+                                0x227548, 0x227554, 0x227558, 0x227564, 0x227568, 0x227574, 0x227578, 0x227590,
+                                0x228494})
 """Trace ips of the race's end writing a record (0x227408: the new last entry 0x227454-0x2274d4, the bubble's swaps
-0x227530-0x227574, the newest-entry word 0x22758c)."""
+0x227530-0x227574, the newest-entry word 0x22758c); and (M9 stage 4, a run long enough to reach the name entry:
+tests/test_dirscreen_mame.py test_reverse_best_time) the name entry's initials 0x5013a0 into the record's +0x14
+(0x228490)."""
 SYSTEM_WRITER_IPS = frozenset({0x1DB74, 0x228F9C, 0x228FA4, 0x22925C, 0x229274, 0x22928C, 0x22929C, 0x2292A4,
                                0x2292AC, 0x2292BC, 0x2292C4, 0x2292CC, 0x22958C, 0x229648, 0x2297F0, 0x229800,
-                               0x229810, 0x229820, 0x2298C4, 0x2298D4, 0x2298E4, 0x2298F4})
+                               0x229810, 0x229820, 0x2298C4, 0x2298D4, 0x2298E4, 0x2298F4,
+                               0x228FDC, 0x228FF8, 0x229008, 0x229010})
 """Trace ips of the writes into the system area 0x1d00000-0x1d001ff after the boot of a mirror's game (measured, entry
 8, discovery log "Rankings"): the coin counter (0x1db74), the race-end totals 0x1d00138 / 0x1d0013c (0x228f98,
 0x228fa0), the checksum and the backup copy 0x1d00180-0x1d001ff (0x229258-0x2292c8), the other counters 0x1d00110,
-0x1d00118, 0x1d00128-0x1d0012e."""
+0x1d00118, 0x1d00128-0x1d0012e; and (M9 stage 4, a run long enough to reach the game's end:
+tests/test_dirscreen_mame.py test_reverse_best_time) the game's totals at 0x228fb0: the play time 0x1d0010c, the
+longest and shortest 0x1d00130 / 0x1d00134, then 0x1d00138 / 0x1d0013c (ips 0x228fdc-0x229010, each the instruction
+after its store)."""
 COUNTERS = (0x01D00140, 0x01D00170)
 """The per-id bookkeeping counters (four u32[3] arrays, course.COUNTER_GUARD): a mirror's game writes none of them."""
 

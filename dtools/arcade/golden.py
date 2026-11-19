@@ -1153,8 +1153,10 @@ their extents for every grown id 3-15 with tables of its own (`extra_spans`)."""
 
 def extra_spans(rs: RomSet, k: int) -> list[tuple[str, int, int, str]]:
     """(region, offset, length, name) of the ID_EXTRA_ARRAYS tables course id `k` names: every record of its camera
-    script's play (64 bytes each, the loop it jumps to included: course.camera_script), its tunnel light positions
-    (12 bytes per zone of its TUNNEL_BYTES count, at the fifth word of its TUNNEL_LIGHTS record) and its progress-mask
+    script's play (64 bytes each, the loop it jumps to included: course.camera_script), its tunnel light record's
+    tables (the positions, 12 bytes per zone of its TUNNEL_BYTES count, at its fifth word; the zone starts and ends,
+    K + 1 u16 for a count K, its first and second; the range, two u16, its third; the zone mask, a u32, its fourth: a reverse
+    id 9-10 writes its own, build._reverse_tables) and its progress-mask
     records (course.PROGRESS_MASK_SIZE bytes each) and the end record's two segment words, the 4 bytes 0x17688 reads
     of it (mirror.mirror_masks writes those). CourseError as the readers (a camera script course.camera_script
     refuses)."""
@@ -1173,9 +1175,13 @@ def extra_spans(rs: RomSet, k: int) -> list[tuple[str, int, int, str]]:
         time, _, target = struct.unpack("<iIi", rs.read_i960(a, 12))
         a = target & 0xFFFFFFFF if time == C.CAMERA_JUMP else a + C.KEYFRAME_SIZE
     count = rs.read_i960(C.id_entry(arrays, "TUNNEL_BYTES", k), 1)[0]
+    starts, ends, rng, mask, positions = struct.unpack("<5I", rs.read_i960(C.id_entry(arrays, "TUNNEL_LIGHTS", k), 20))
     if count:
-        record = rs.read_i960(C.id_entry(arrays, "TUNNEL_LIGHTS", k), 20)
-        at(struct.unpack_from("<I", record, 16)[0], 12 * count, "tunnel light positions")
+        at(positions, 12 * count, "tunnel light positions")
+        at(starts, 2 * count + 2, "tunnel zone starts")     # K + 1 words each (reverse.reversed_tunnel)
+        at(ends, 2 * count + 2, "tunnel zone ends")
+    at(rng, 4, "tunnel range")                  # read under the tunnel bit with or without zones (0x7b88)
+    at(mask, 4, "tunnel zone mask")
     start = a = _u32(rs, C.id_entry(arrays, "PROGRESS_MASKS", k))
     while struct.unpack("<2H", rs.read_i960(a, 4))[1] < C.PROGRESS_MASK_END:
         if a - start >= C.PROGRESS_MASK_SIZE * 256:

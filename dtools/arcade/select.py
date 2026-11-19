@@ -1371,7 +1371,7 @@ def _unfilled(rs: RomSet, entries) -> list[tuple[int, int]]:
     return out
 
 
-def patch_select(rs: RomSet, entries=ENTRIES) -> RomSet:
+def patch_select(rs: RomSet, entries=ENTRIES, *, faceted_maps: bool = True) -> RomSet:
     """`rs` (a grown set, course.grow_ids) with the Circuit Select of `entries`, a row of 8 or 16 (ROW_LENGTHS;
     ENTRIES, the release row of eight, by default; the draw's WINDOW_NAME branch only for a row holding a WINDOW_NAME
     entry, `code`; the module docstring has the design; a row of 16 writes the bytes it wrote
@@ -1466,7 +1466,7 @@ def patch_select(rs: RomSet, entries=ENTRIES) -> RomSet:
     # the 3D maps: MAPS[3 * first + position]; the mirrors of the originals' quads mirrored (`_mirrored_maps`), an own
     # panel's course drawn from its road (`_own_maps`)
     words, map_patches = _mirrored_maps(rs, entries)
-    own_words, own_patches = _own_maps(rs, entries, map_patches)
+    own_words, own_patches = _own_maps(rs, entries, map_patches, faceted_maps)
     words.update(own_words)
     blob = b""
     for first in range(n - 2):
@@ -1625,7 +1625,7 @@ def _mirrored_maps(rs: RomSet, entries) -> tuple[dict[int, bytes], dict[tuple[st
         words[c] = struct.pack("<5I", at, *(at if w == rec[0] else w for w in rec[1:]))
     return words, patches
 
-def _own_maps(rs: RomSet, entries, taken: dict) -> tuple[dict[int, bytes], dict[tuple[str, int], bytes]]:
+def _own_maps(rs: RomSet, entries, taken: dict, faceted: bool = True) -> tuple[dict[int, bytes], dict[tuple[str, int], bytes]]:
     """({course id of an own_panel entry: its map record's 20 bytes after the place}, patches): each such course's map
     drawn from its own road and scenery (selmap.course_map: flat polygons in the map quad's frame) and its flat
     headers (one a part, selmap.parts), the objects at the last free bytes of the custom polygon area, the headers at
@@ -1644,7 +1644,7 @@ def _own_maps(rs: RomSet, entries, taken: dict) -> tuple[dict[int, bytes], dict[
         stock = _stock_map_lists(rs)
         rec = struct.unpack("<5I", rs.read_i960(C.SELECT_MAP_OBJECTS + 12, 20))
         place = C.object_list(rs, stock[0], "panel 0's map")[0]
-        made = {c: selmap.course_map(rs, c) for c in todo}
+        made = {c: selmap.course_map(rs, c, faceted) for c in todo}
     except DecodeError as e:
         if isinstance(e, SelectError):
             raise
