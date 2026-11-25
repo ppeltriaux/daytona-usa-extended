@@ -106,7 +106,8 @@ def _long_ids(long_ids) -> tuple[int, ...]:
 
 
 def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
-                *, title: bool = True, times: bool = True, pits: bool = True, direction: bool = True) -> RomSet:
+                *, title: bool = True, times: bool = True, pits: bool = True, direction: bool = True,
+                far_view: bool | None = None) -> RomSet:
     """The release set from the stock `rs` and the US Dreamcast `disc` (the module docstring's chain): ids 3-7
     converted (RELEASE_CONVERTED), the rankings, the select with the release row (select.ENTRIES), the converted
     courses' own time tables (build.race_times on RELEASE_TIME_IDS), the start time raised on `long_ids` (none by
@@ -115,6 +116,9 @@ def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
     `times=False` and RELEASE_LONG_IDS, v0.1.1's chain); `direction=False` leaves out the reverse courses, their
     views and the Course Direction screen (v0.1.2's chain; the gates of the courses race it: the screen moves the race
     52 frames and changes nothing else, tests/test_dirscreen_mame.py test_race_after_screen_as_stock);
+    `far_view=False` (default: as `direction`) leaves out v0.3's far view and depth test: the converted courses
+    thinned as v0.2's and without model.DEPTH_TEST,
+    build.viewed_set's views, the polygon cap 5,000 (v0.2's chain, RELEASE_SHA1_V02); the far view needs `direction`;
     `times=False` leaves the race times out (the converted courses keep Beginner's words, as v0.1-v0.1.1: the release
     gates' time-over frames are measured on those), `title=False` the title step (the release gates compare the
     titled set's ground log with the untitled one's, tests/test_courses_mame.py `_gate`). ReleaseError for `rs` not a
@@ -125,15 +129,21 @@ def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
     if not isinstance(disc, DcDisc):
         raise ReleaseError(f"{type(disc).__name__} is not a DcDisc")
     long_ids = _long_ids(long_ids)
-    for name, v in (("title", title), ("times", times), ("pits", pits), ("direction", direction)):
+    far_view = direction if far_view is None else far_view
+    for name, v in (("title", title), ("times", times), ("pits", pits), ("direction", direction),
+                    ("far_view", far_view)):
         if not isinstance(v, bool):
             raise ReleaseError(f"{name} {v!r:.60} is not a bool")
+    if far_view and not direction:
+        raise ReleaseError("far_view needs direction (its views cover the reverse ids)")
     out = C.widen_ids(C.guard_new_ids(C.grow_ids(rs)))
     for n in RELEASE_CONVERTED:
-        out = build.converted_set(out, disc, n, slot=n, scenery="model", **({"road_copy": True} if direction else {}))
+        out = build.converted_set(out, disc, n, slot=n, scenery="model", **({"road_copy": True} if direction else {}),
+                                  **({"thin": False, "depth": True} if far_view else {}))
     for n in range(REVERSE_IDS) if direction else ():
         out = build.converted_set(out, disc, n, slot=n + REVERSE_IDS, variant="R",
-                                  scenery="keep" if n < ARCADE_COURSES else "model", road_copy=True)
+                                  scenery="keep" if n < ARCADE_COURSES else "model", road_copy=True,
+                                  **({"thin": False, "depth": True} if far_view else {}))
     out = select.patch_select(C.grow_rankings(out), select.ENTRIES, faceted_maps=direction)
     for k in (RELEASE_TIME_IDS + (REVERSE_TIME_IDS if direction else ())) if times else ():
         out = build.race_times(out, golden.decode_course(out, k))
@@ -149,7 +159,8 @@ def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
     if not direction:
         return build.viewed_set(out)
     from dtools.arcade import dirscreen
-    return dirscreen.patch_direction(build.viewed_set(out, build.REVERSE_VIEW))
+    return dirscreen.patch_direction(build.far_viewed_set(out) if far_view
+                                     else build.viewed_set(out, build.REVERSE_VIEW))
 
 
 # ---- packaging (Task 5): the inputs checked, the set written ----

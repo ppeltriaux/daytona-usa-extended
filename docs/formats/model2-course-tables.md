@@ -372,6 +372,12 @@ a caller that takes the partial result knows what is missing.
 On Beginner at frames 2400-2459, 10-13 cells were visible per frame and the grid objects drawn were exactly those
 cells' objects, in list order.
 
+(v0.3, `course.far_view`: the routine's last store and `ret` at `0x17588` branch to a hook that appends more cells to
+`0x5016c0`, which has room for 63 to `0x501700`, from a per-quadrant far table after the id's view-test table, and
+stores the id's polygon cap at `0x5010f4`. The bit set `0x501520` is left as the view test made it: the race reads it
+(with every mask opened the race-time margins moved on seven courses), and Desert City lost its textures with far
+cells set in it. docs/follow-ups/v0.3.md.)
+
 Decoder: `culling(rs)` (`Culling`: the four tables as `ViewPoint(dx, dz, mask)`, 12 per table at `VIEW_TEST_POINTS`,
 the two visit orders, the block offsets `0x175c6`, `16 * dr + dc`). The tables are geometry in cell units: every point
 lies a whole number of cells (multiples of 128, within -256..384) from the reference cell's low corner, and every mask

@@ -3021,6 +3021,185 @@ def view_ids(rs: RomSet, views: dict) -> RomSet:
                             _rom_word_at(VIEW_READER + 4): struct.pack("<I", VIEW_RAM)})
 
 
+# --- the polygon cap and the far view (v0.3) --------------------------------------------------------------------------
+# Pascal, 20 Nov 2026: "increase the number of polygons like we did in Virtua Racing: ideally to see further away
+# (draw distance) and in second to see more of the side decors". Measured in MAME first (docs/follow-ups/v0.3.md):
+# - the frame's polygon cap: the word 5,000 (OBC) the boot stores at POLYGON_CAP_RAM (0x5010f4; `lda 0x1388,r3` at
+#   0x12f8). The draw routines stop emitting scenery objects once the frame's count (0x5010e8) is past it, and send
+#   it with every object as its record count's bound (the objects end by their own end marks).
+# - the view: the culling's 5 x 5 block is all the game's own routine can open (25-bit masks), 15 cells a heading.
+# `far_view` hooks the culling's end (FAR_SITE, the last store and the ret of 0x172e8) with FAR_CODE. Each frame it
+# reads, after the heading quadrant's view-test table of the course id (through VIEW_RAM, so every id has its own),
+# the id's polygon cap, which it stores at POLYGON_CAP_RAM (the draw comes after the culling), and a list of
+# (row, column) cell offsets: each cell on the grid that the game's own view test has not opened (its bit in the
+# visible set 0x501520 clear) is appended to the visible list (0x5016c0: a count byte and 63 cell bytes to 0x501700).
+# The cells are NOT set in the visible set, and the view-test masks stay the id's own:
+# - the set is read by the race, not only the draw: with every mask opened to the whole block the autopilot's lap
+#   moved on seven of thirteen courses (tests/test_release_mame.py RACE_TIMES_MARGIN; back to the tick with the masks
+#   restored);
+# - with far cells set in it Desert City lost every texture (an actor of a far cell, not traced).
+# An id with no extra cells and the cap OBC races as before: the same display lists and render-rate writes as stock
+# on the arcade's three (test_originals_on_release_set), the hook's instructions aside.
+
+POLYGON_CAP_RAM = 0x005010F4
+CAP_MAX = 30000
+"""The largest polygon cap a far table takes: MAME's renderer holds 32,768 polygons a frame (model2.h MAX_POLYGONS,
+a fatal error past it), and the cars and the HUD are drawn outside the count."""
+FAR_SITE = 0x00017588
+"""The culling's last instructions (0x172e8's end): `stib g2,0x501640` (8 bytes) and `ret`."""
+FAR_CODE = 0x0003FF00
+FAR_SIZE = 0x100
+"""The hook's home: program ROM's last 256 bytes (romset.RESERVED; 0xff on every set, in build.PROGRAM_FREE's tail)."""
+FAR_CAP_AT = VIEW_TEST_SIZE
+"""A quadrant's far table starts this many bytes past its view-test table, right after it: the cap word, then at
+FAR_CELLS_AT the cells."""
+FAR_CELLS_AT = FAR_CAP_AT + 4
+FAR_END = 16
+"""The far cells' end mark, in place of a row offset (a cmpibe literal: 0-31; the offsets are within -8..8)."""
+FAR_CELLS = 62
+"""Far cells a quadrant at most: the visible list holds 63 cells and the reference cell is always the game's."""
+FAR_TABLE_SIZE = (4 + 2 * FAR_CELLS + 2 + 3) & ~3
+"""Bytes of a far table: the cap (u32), (row offset, column offset) signed bytes per cell, FAR_END, zero padding."""
+VISIBLE_LIST = 0x005016C0
+VISIBLE_SET = 0x00501520
+NEW_NEAR_COUNT = 0x00501640
+HEADING = 0x005014A8
+CELL_AT_G13 = 0x2E                      # the reference cell (0x172a0 stores it): column | row << 4
+
+
+def far_original() -> bytes:
+    """The 12 bytes at FAR_SITE on a set without the far view."""
+    return i960.mem("stib", "g2", NEW_NEAR_COUNT) + i960.ctrl("ret")
+
+
+def far_code() -> i960.Block:
+    """The code at FAR_CODE, branched to from FAR_SITE in the culling routine's own frame (its locals are free: it
+    returns next): the store the branch replaced; the id's cap stored at POLYGON_CAP_RAM; then for each (row,
+    column) offset of the heading quadrant's far table the cell, when it lies on the 16 x 16 grid and its bit in
+    VISIBLE_SET is clear, appended to VISIBLE_LIST; the list's count byte updated; ret."""
+    b = i960.Block(FAR_CODE)
+    b.mem("stib", "g2", NEW_NEAR_COUNT)
+    b.mem("ldos", "r4", CELL_AT_G13, "g13")
+    b.reg("and", 15, "r4", "r5")                     # the reference cell's column
+    b.reg("shro", 4, "r4", "r6")                     # and row
+    b.mem("ldos", "r8", HEADING)                     # the quadrant, as the view test's (0x1772c)
+    b.reg("shlo", 13, 1, "r3")
+    b.reg("addo", "r3", "r8", "r8")
+    b.reg("shro", 14, "r8", "r8")
+    b.reg("and", 3, "r8", "r8")
+    b.mem("ld", "r8", VIEW_RAM, None, "r8", 4)       # its view-test table; the far table follows
+    b.mem("ld", "r3", FAR_CAP_AT, "r8")
+    b.mem("st", "r3", POLYGON_CAP_RAM)
+    b.mem("lda", "r8", FAR_CELLS_AT, "r8")
+    b.mem("lda", "r9", VISIBLE_LIST)
+    b.mem("ldob", "r10", 0, "r9")
+    b.label("loop")
+    b.mem("ldib", "r11", 0, "r8")
+    b.cobr("cmpibe", FAR_END, "r11", "done")
+    b.mem("ldib", "r12", 1, "r8")
+    b.reg("addo", 2, "r8", "r8")
+    b.reg("addi", "r6", "r11", "r11")
+    b.reg("addi", "r5", "r12", "r12")
+    b.cobr("cmpobl", 15, "r11", "loop")              # off the grid (unsigned, so below 0 too)
+    b.cobr("cmpobl", 15, "r12", "loop")
+    b.reg("shlo", 4, "r11", "r11")
+    b.reg("or", "r12", "r11", "r11")                 # the cell
+    b.reg("shro", 5, "r11", "r13")
+    b.mem("ld", "r14", VISIBLE_SET, None, "r13", 4)
+    b.reg("and", 31, "r11", "r3")
+    b.reg("shro", "r3", "r14", "r14")
+    b.reg("and", 1, "r14", "r14")
+    b.cobr("cmpobe", 1, "r14", "loop")               # the game's view test opened it: in the list already
+    b.reg("addo", 1, "r10", "r10")
+    b.mem("stob", "r11", None, "r9", "r10", 1)       # list[count]: the count byte is list[0]
+    b.ctrl("b", "loop")
+    b.label("done")
+    b.mem("stob", "r10", 0, "r9")
+    b.ctrl("ret")
+    return b
+
+
+def far_table(cap: int, offsets) -> bytes:
+    """The far table (FAR_TABLE_SIZE bytes) of the polygon cap `cap` and `offsets`, (row, column) cell offsets from
+    the reference cell. CourseError for a cap that is not an int in OBC..CAP_MAX (bool refused), or offsets that are
+    not at most FAR_CELLS distinct pairs of ints within -8..8, none the reference cell itself."""
+    if not is_int(cap) or not OBC <= cap <= CAP_MAX:
+        raise CourseError(f"polygon cap {cap!r:.40} is not an int in {OBC}..{CAP_MAX}")
+    if not isinstance(offsets, (tuple, list)) or not all(
+            isinstance(o, tuple) and len(o) == 2 and all(is_int(v) and -8 <= v <= 8 for v in o) for o in offsets):
+        raise CourseError(f"far offsets {offsets!r:.60} are not (row, column) pairs within -8..8")
+    if len(set(offsets)) != len(offsets) or len(offsets) > FAR_CELLS:
+        raise CourseError(f"far offsets: {len(offsets)} pairs (at most {FAR_CELLS}, each once)")
+    if (0, 0) in offsets:
+        raise CourseError("far offsets: the reference cell (always in the list)")
+    blob = struct.pack("<I", int(cap)) + b"".join(struct.pack("bb", int(r), int(c)) for r, c in offsets) \
+        + bytes([FAR_END, 0])
+    return blob + bytes(FAR_TABLE_SIZE - len(blob))
+
+
+def read_far_table(rs: RomSet, table: int) -> tuple[int, tuple[tuple[int, int], ...]]:
+    """(the polygon cap, the (row, column) offsets) of the far table after the view-test table at `table`.
+    CourseError when the bytes there are not a far table (a cap outside OBC..CAP_MAX, no end mark within
+    FAR_TABLE_SIZE, an offset outside -8..8 or (0, 0))."""
+    blob = _read(rs, int(table) + FAR_CAP_AT, FAR_TABLE_SIZE, f"the far table after {int(table):#x}")
+    cap = struct.unpack_from("<I", blob)[0]
+    out = []
+    for i in range(4, FAR_TABLE_SIZE, 2):
+        r, c = struct.unpack_from("bb", blob, i)
+        if r == FAR_END and OBC <= cap <= CAP_MAX:
+            return cap, tuple(out)
+        if not (-8 <= r <= 8 and -8 <= c <= 8) or (r, c) == (0, 0):
+            break
+        out.append((r, c))
+    raise CourseError(f"no far table after the view-test table at {int(table):#x}")
+
+
+def far_viewed(rs: RomSet) -> bool:
+    """True when `rs` carries far_view (FAR_SITE branches to FAR_CODE). CourseError for `rs` not a RomSet."""
+    if not isinstance(rs, RomSet):
+        raise CourseError(f"{type(rs).__name__} is not a RomSet")
+    return rs.read_i960(FAR_SITE, 4) == i960.ctrl("b", FAR_CODE - FAR_SITE)
+
+
+def polygon_cap(rs: RomSet, k: int) -> int:
+    """The frame's polygon cap of course id `k` on `rs`: its far tables' on a set with the far view, else OBC.
+    CourseError for `rs` not a RomSet, an id outside 0..15, or far tables of one id that disagree."""
+    if not far_viewed(rs):
+        if not is_int(k) or not 0 <= k < COURSE_IDS:
+            raise CourseError(f"polygon cap: course id {k!r} is not 0..{COURSE_IDS - 1}")
+        return OBC
+    caps = {read_far_table(rs, t)[0] for t in view_tables(rs, k)}
+    if len(caps) != 1:
+        raise CourseError(f"course id {k}: its four far tables name the caps {sorted(caps)}")
+    return caps.pop()
+
+
+def far_view(rs: RomSet) -> RomSet:
+    """The set `rs` (with view_ids, every id's four view-test tables each followed by a far table) with the far view:
+    FAR_CODE written and FAR_SITE's store replaced by a branch to it. CourseError for `rs` not a RomSet with
+    view_ids, one that carries the far view already, a FAR_SITE that does not hold its original instructions, a
+    FAR_CODE that is not free (0xff), or an id whose view-test table is not followed by a far table."""
+    if not isinstance(rs, RomSet):
+        raise CourseError(f"{type(rs).__name__} is not a RomSet")
+    if not viewed(rs):
+        raise CourseError("far_view needs view_ids (the hook finds the id's far tables through VIEW_RAM)")
+    if far_viewed(rs):
+        raise CourseError("far_view: the set carries the far view already")
+    if rs.read_i960(FAR_SITE, 12) != far_original():
+        raise CourseError(f"far_view {FAR_SITE:#x}: {rs.read_i960(FAR_SITE, 12).hex()}, not the culling's end "
+                          f"{far_original().hex()}")
+    code = far_code().bytes()
+    if len(code) > FAR_SIZE:
+        raise CourseError(f"far_view: {len(code)} code bytes do not fit FAR_SIZE {FAR_SIZE}")
+    if rs.read_i960(FAR_CODE, FAR_SIZE) != b"\xff" * FAR_SIZE:
+        raise CourseError(f"FAR_CODE {FAR_CODE:#x} (+{FAR_SIZE:#x}) is not free (0xff)")
+    for k in range(COURSE_IDS):
+        for t in view_tables(rs, k):
+            read_far_table(rs, t)
+    return rs.with_patches({_rom_word_at(FAR_CODE): code,
+                            _rom_word_at(FAR_SITE): i960.ctrl("b", FAR_CODE - FAR_SITE)})
+
+
 # --- rankings per entry (M4b, Task 6) -------------------------------------------------------------------------------
 # Spec decision 19: every course id keeps its own best-time ranking table in backup SRAM; a new entry never writes an
 # original's table and none is shared. The game reaches a table only through two per-id arrays (RANKING_TABLES and

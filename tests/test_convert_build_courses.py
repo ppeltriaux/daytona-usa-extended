@@ -334,7 +334,7 @@ def test_final_set_with_id4(disc):  # noqa: F811
     # an independent reference (fix round 1, M4): m4b_set is Phase 9's final set byte for byte, as built by the code
     # at 278b42a (git archive; the review's sha1 per region, out/phase10/review-t3-analysis.txt)
     assert {r: hashlib.sha1(getattr(old, r)).hexdigest() for r in M4B_SHA1} == M4B_SHA1
-    assert build.program_room(new) == build.program_room(old) == 5312     # id 4 takes no program bytes
+    assert build.program_room(new) == build.program_room(old) == 5056     # id 4 takes no program bytes
     assert {r: hashlib.sha1(getattr(new, r)).hexdigest() for r in FINAL_SHA1} == FINAL_SHA1    # the reference's
     select = ("char_blocks", "screen_uploads")         # the select's upload set, read from the set (its row moved)
     for k in range(4):
@@ -742,7 +742,7 @@ def test_final_set_with_id7(disc):  # noqa: F811
         pytest.skip("set DAYTONA_ROMDIR to a directory containing daytona.zip")
     new, old = task4_set(rs, disc), task3_set(rs, disc)
     assert {r: hashlib.sha1(getattr(old, r)).hexdigest() for r in FINAL_SHA1} == FINAL_SHA1      # the reference's
-    assert build.program_room(new) == build.program_room(old) == 5312
+    assert build.program_room(new) == build.program_room(old) == 5056
     select = ("char_blocks", "screen_uploads")
     for k in range(5):
         assert _differ(G.decode_course(new, k), G.decode_course(old, k), skip=select) == [], k
@@ -843,7 +843,7 @@ def test_final_set_with_mirrors_12_15(disc):  # noqa: F811
         pytest.skip("set DAYTONA_ROMDIR to a directory containing daytona.zip")
     new, old = task5_set(rs, disc), task4_set(rs, disc)
     assert {r: hashlib.sha1(getattr(old, r)).hexdigest() for r in FINAL_SHA1_T4} == FINAL_SHA1_T4   # the reference's
-    assert build.program_room(new) == build.program_room(old) == 5312
+    assert build.program_room(new) == build.program_room(old) == 5056
     select = ("char_blocks", "screen_uploads")
     for k in (0, 1, 2, 3, 4, 7, 8, 9, 10, 11):
         assert _differ(G.decode_course(new, k), G.decode_course(old, k), skip=select) == [], k

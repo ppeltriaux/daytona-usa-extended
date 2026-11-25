@@ -578,9 +578,15 @@ def _cut(p: _Poly, points: dict | None, sizes) -> list[_Poly]:
 
 # ---- records ----
 
-def _attr(n: int, link: int, p: _Poly) -> int:
+DEPTH_TEST = 1 << 7
+"""Attr bit 7 (v0.3): asks the custom MAME's renderer for a per-pixel depth test on this polygon (tools/
+mame-daytona-rom-space.patch; docs/formats/model2-polygon-rom.md, "The depth test"). No record of the original set has
+it (101,462 records of the three courses read), and stock MAME and the hardware ignore it."""
+
+
+def _attr(n: int, link: int, p: _Poly, depth: bool = False) -> int:
     return ((1 if n == 4 else 2) | link << 8 | ZSORT << 10 | STEP << 12 | (DOUBLE_SIDED if p.double else 0)
-            | TEX_PARAM << 18 | link << 23 | p.coef << 27)
+            | TEX_PARAM << 18 | link << 23 | p.coef << 27 | (DEPTH_TEST if depth else 0))
 
 
 def _f32_point(p) -> tuple[float, float, float]:
@@ -646,7 +652,7 @@ def _link(p: _Poly, nxt: _Poly | None) -> int:
     return DEAD_LINK
 
 
-def _pieces(polys: list[_Poly]) -> tuple[Piece, ...]:
+def _pieces(polys: list[_Poly], depth: bool = False) -> tuple[Piece, ...]:
     order = _chain(polys)
     pieces = []
     recs: list = []
@@ -675,7 +681,7 @@ def _pieces(polys: list[_Poly]) -> tuple[Piece, ...]:
         face = _newell(p.corners)
         normal = _f32_point(-face / np.linalg.norm(face))
         rest = [_f32_point(c) for c in p.corners[2:]]
-        recs.append(P.Record(_attr(n, _link(p, nxt), p), normal, rest[0], rest[1] if n == 4 else None))
+        recs.append(P.Record(_attr(n, _link(p, nxt), p, depth), normal, rest[0], rest[1] if n == 4 else None))
         meta.append((p.texture, p.uvs, p.sources))
     close()
     return tuple(pieces)
@@ -789,7 +795,8 @@ def _copy_cells(p: _Poly, home: int, copy) -> list[int]:
     return out
 
 
-def convert_model(m, quad=None, points=None, cell_cut=None, road_copy=None) -> dict[int, tuple[Piece, ...]]:
+def convert_model(m, quad=None, points=None, cell_cut=None, road_copy=None,
+                  depth: bool = False) -> dict[int, tuple[Piece, ...]]:
     """The course model `m` as polygon objects per scenery cell: cell (row << 4 | col) -> its Pieces (one object
     each, at most MAX_RECORDS records; several when the cell has more), only the cells that hold a polygon. Every
     non-degenerate triangle of `pol.triangles(m)` is drawn by exactly one record of one Piece (`Piece.sources`), or by
@@ -820,7 +827,13 @@ def convert_model(m, quad=None, points=None, cell_cut=None, road_copy=None) -> d
     polygon whose centroid is within `band` units of the road line is also filed in each neighbouring cell its extent
     comes within `margin` units of (`_copy_cells`; the module docstring, "the road copied across cell edges"), so such
     a triangle is drawn by one record in each of those cells; None copies nothing. ConvertError also for a bad
-    `road_copy` (`_road_copy`)."""
+    `road_copy` (`_road_copy`).
+
+    `depth` (v0.3): every polygon record carries DEPTH_TEST (the move records do not: they draw nothing), so the
+    custom MAME resolves the model's overlapping layers per pixel as the Dreamcast did; nothing else changes.
+    ConvertError for a `depth` that is not a bool."""
+    if not isinstance(depth, bool):
+        raise ConvertError(f"depth {depth!r:.40} is not a bool")
     if cell_cut is not None and not (is_number(cell_cut) and math.isfinite(cell_cut) and cell_cut >= 0):
         raise ConvertError(f"cell_cut {cell_cut!r:.40} is not a finite number of world units >= 0")
     if points is not None and not (isinstance(points, dict) and all(
@@ -837,7 +850,7 @@ def convert_model(m, quad=None, points=None, cell_cut=None, road_copy=None) -> d
         cells[home].append(p)
         for other in (_copy_cells(p, home, copy) if copy else ()):
             cells[other].append(p)
-    return {cell: _pieces(cells[cell]) for cell in sorted(cells)}
+    return {cell: _pieces(cells[cell], depth) for cell in sorted(cells)}
 
 
 def _quad(quad) -> tuple:

@@ -131,6 +131,18 @@ def test_release_chain_direction(monkeypatch):
         ("pit_stalls", (s, d, n) + ((v,) if v else ()), ())) or f"{s}+p{n}{v}")
     monkeypatch.setattr(D, "patch_direction", lambda s: calls.append(("patch_direction", (s,), ())) or f"{s}+dir")
     monkeypatch.setattr(C, "patch_pit_heading", lambda s: calls.append(("patch_pit_heading", (s,), ())) or f"{s}+h")
+    monkeypatch.setattr(build, "far_viewed_set", lambda s: calls.append(("far_viewed_set", (s,), ()))
+                        or f"viewed_set#{len(calls)}")
+    # v0.3: the far view by default; far_view=False is v0.2's chain (thinned models, viewed_set with REVERSE_VIEW)
+    R.release_set(rs, dc, far_view=False)
+    v02, calls[:] = list(calls), []
+    assert all("thin" not in dict(c[2]) and "depth" not in dict(c[2]) for c in v02 if c[0] == "converted_set")
+    assert v02[-2][0] == "viewed_set" and v02[-2][1][1] is build.REVERSE_VIEW and v02[-1][0] == "patch_direction"
+    assert "far_viewed_set" not in [c[0] for c in v02]
+    for bad in ({"far_view": 1}, {"far_view": True, "direction": False}):
+        with pytest.raises(R.ReleaseError):
+            R.release_set(rs, dc, **bad)
+    assert not calls
     R.release_set(rs, dc, direction=False)
     assert "patch_pit_heading" not in [c[0] for c in calls]
     plain, calls[:] = list(calls), []
@@ -144,9 +156,12 @@ def test_release_chain_direction(monkeypatch):
     rev = calls[8:16]
     assert [c[1][1:] for c in rev] == [(dc, n) for n in range(8)]
     assert [dict(c[2]) for c in rev] == [{"slot": n + 8, "variant": "R", "scenery": "keep" if n < 3 else "model",
-                                          "road_copy": True} for n in range(8)]
+                                          "road_copy": True, "thin": False, "depth": True} for n in range(8)]
     # v0.2: the road copied across cell edges (build.ROAD_COPY) on the converted courses too, with the screen only
-    assert [dict(c[2]) for c in calls[3:8]] == [{"slot": n, "scenery": "model", "road_copy": True} for n in (3, 4, 7, 6, 5)]
+    assert [dict(c[2]) for c in calls[3:8]] == [{"slot": n, "scenery": "model", "road_copy": True, "thin": False,
+                                                 "depth": True}
+                                                for n in (3, 4, 7, 6, 5)]
+    assert [c[0] for c in calls] == [c[0] for c in v02[:-2]] + ["far_viewed_set", "patch_direction"]
     after = [c[0] for c in plain[8:]]
     times_end = 16 + after.index("decode") + 2 * 5          # the five converted courses' decode / race_times
     assert names[times_end:times_end + 16] == ["decode", "race_times"] * 8
@@ -158,11 +173,11 @@ def test_release_chain_direction(monkeypatch):
     assert names[last_pit + 9] == "patch_pit_heading"
     assert calls[last_pit + 9][1] == (f"{calls[last_pit + 8][1][0]}+p7R",)
     del names[last_pit + 9], calls[last_pit + 9]
-    assert names[last_pit + 9:-1] == after[last_pit - 15:] and names[-1] == "patch_direction"
+    assert names[last_pit + 9:-1] == after[last_pit - 15:-1] + ["far_viewed_set"] and names[-1] == "patch_direction"
     rpits = calls[last_pit + 1:last_pit + 9]
     assert [c[1][1:] for c in rpits] == [(dc, n, "R") for n in range(8)]
     view = calls[-2]
-    assert view[0] == "viewed_set" and view[1][1] is build.REVERSE_VIEW
+    assert view[0] == "far_viewed_set" and len(view[1]) == 1
     assert calls[-1] == ("patch_direction", (f"viewed_set#{recorded - 1}",), ())
 
 
@@ -200,11 +215,21 @@ def _release(romset_zip, disc) -> RomSet:  # noqa: F811
     return _RELEASE[str(romset_zip)]
 
 
-RELEASE_SHA1 = {"program": "31df04b7f701d7f5d830fc5f9d2d44af0ba1dffe",
-                "data": "b34898b10d94beaffe8c474420dbbdb778e619f5",
+RELEASE_SHA1 = {"program": "27370a5e3cac58fb149f4d5af6e75a8be7c76436",
+                "data": "89b8cb80b968dbc49b00a3a65bc28245e67a1a95",
                 "copro_data": "b63256bc55ad101e4415c88fe3b0b5ff0fe119f1",
-                "polygons": "e34bb2e6bda6e444251620fe11874db52e4e9219",
-                "textures": "4d414e14324145eaf0599770cb9d1fee784b0c91"}
+                "polygons": "595529c184d4dbb11f3e44742a9aa11b9d190e12",
+                "textures": "457d32ed84fe168662803c62270fb5482f37f0d8"}
+RELEASE_SHA1_V02 = {"program": "31df04b7f701d7f5d830fc5f9d2d44af0ba1dffe",
+                    "data": "b34898b10d94beaffe8c474420dbbdb778e619f5",
+                    "copro_data": "b63256bc55ad101e4415c88fe3b0b5ff0fe119f1",
+                    "polygons": "e34bb2e6bda6e444251620fe11874db52e4e9219",
+                    "textures": "4d414e14324145eaf0599770cb9d1fee784b0c91"}
+"""`release_set(..., far_view=False)`: v0.2's release set byte for byte (RELEASE_SHA1's pin before the far view).
+v0.3 (20 Nov 2026, in development): RELEASE_SHA1 moved with the far view (build.far_viewed_set in place of
+viewed_set: every id's own view-test tables, v0.2's, each with its far table, and the hook, which also sets the
+id's polygon cap: 28,000 on the converted courses and their reverses) and the converted models left unthinned
+(converted_set's thin=False), docs/follow-ups/v0.3.md."""
 """The release set (`release_set`: the M5b chain, the named row, the start words of 3-7, the title, the views; Task 7's
 painted maps on the select), the sha1 of each region, built independently of the code under test: ed570c2 (Task 5's
 first commit) from a git archive into a scratch folder, a fresh venv on the repository's Python 3.15.0 with `pip install
@@ -265,6 +290,14 @@ def test_release_plain_is_v012(romset_zip, disc):  # noqa: F811
     import hashlib
     rel = _release_plain(romset_zip, disc)
     assert {r: hashlib.sha1(getattr(rel, r)).hexdigest() for r in PLAIN_SHA1} == PLAIN_SHA1
+
+
+def test_release_without_far_view_is_v02(romset_zip, disc):  # noqa: F811
+    """`far_view=False` builds v0.2's release set, RELEASE_SHA1_V02 region for region: the far view adds its steps
+    (and leaves the thinning out) and moves no byte of the chain before them."""
+    import hashlib
+    rel = R.release_set(RomSet.from_zip(romset_zip), disc, far_view=False)
+    assert {r: hashlib.sha1(getattr(rel, r)).hexdigest() for r in RELEASE_SHA1_V02} == RELEASE_SHA1_V02
 
 
 def test_release_set_pinned(romset_zip, disc):  # noqa: F811

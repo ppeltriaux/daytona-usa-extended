@@ -74,6 +74,19 @@ Only `attr & 0x3ffff` is pushed to the rasterizer (np_ns line 1050); bits 18–3
 
 Culling also reads `attr` (`check_culling`, line 433; defined at 243).
 
+### The depth test (bit 7; the custom MAME only, v0.3)
+
+Bit 7 is one of the 18 the geometry engine passes on and none of the original set's records uses (101,462 records of
+the three courses read: the bits ever set are `0x21f03`). `tools/mame-daytona-rom-space.patch` gives it a meaning in
+`model2_v.cpp` / `model2rd.ipp`: a polygon with it is depth tested per pixel. MAME draws the frame's polygons
+nearest sort key first and a pixel once filled is never drawn again (the fill map). A depth-tested polygon marks the
+pixels it draws (fill `0x7f`) and stores its 1/z there; a later depth-tested polygon nearer at that pixel replaces
+it. Every other polygon keeps the rule as it was, against depth-tested pixels too: an untested polygon drawn first
+keeps its pixels, and one drawn later never replaces a filled pixel. So a set with no such polygon draws exactly as
+before (checked: a recorded drive of a set without the bit replays to the same pictures on the patched and the
+unpatched build), and the converter sets it only on the Dreamcast models' polygons (`model.DEPTH_TEST`,
+`convert_model(..., depth=True)`; `release_set`'s v0.3 chain). Stock MAME and the hardware ignore the bit.
+
 ## Strip and corner rule (rasterizer)
 
 The geometry engine pushes the stream to `model2_3d_push` (line 769); command `0x01` collects it in

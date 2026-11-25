@@ -890,6 +890,65 @@ def viewed_set(rs: RomSet, views: dict | None = None) -> RomSet:
     return C.view_ids(rs, ptrs)
 
 
+VIEW_15 = frozenset((d, c) for d in range(3) for c in range(-2, 3))
+"""The culling half-block's 15 cells: the stock view (`view_tables` of it are the shared tables' bytes)."""
+FAR_DEPTH, FAR_HALF = 4, 3
+"""The far view's reach in cells from the reference cell: rows ahead (the game's block: 2) and columns to each side
+(the block: 2). 20 cells a quadrant past the block, 45 with it (the visible list holds 63)."""
+FAR_SHAPE = tuple([(d, c) for d in range(3, FAR_DEPTH + 1) for c in range(-FAR_HALF, FAR_HALF + 1)]
+                  + [(d, c) for d in range(3) for c in range(-FAR_HALF, FAR_HALF + 1) if abs(c) > 2])
+"""The far view's cells past the block, (d, c) as VIEW names them: rows 3..FAR_DEPTH ahead across
+-FAR_HALF..FAR_HALF, and the columns past the block beside rows 0-2."""
+BLOCK_OFFSETS = tuple((r, c) for r in range(-2, 3) for c in range(-2, 3) if (r, c) != (0, 0))
+"""The 5 x 5 block's cells but the reference cell, (row, column): a far id's far table opens them all first, whatever
+the heading (the game's view test opens up to 15 of them; the rest lie beside and behind, where v0.2's road holes
+were: the camera trails the car)."""
+FAR_IDS = (3, 4, 5, 6, 7, 11, 12, 13, 14, 15)
+"""The ids `far_viewed_set` gives the whole block, the far view and POLYGON_CAP: the converted courses and their
+reverses. The arcade's own courses and their reverses (0-2, 8-10) get an empty far table and the cap course.OBC."""
+POLYGON_CAP = 28000
+"""The frame's polygon cap of a far id (course.CAP_MAX 30,000). Measured in MAME 20 Nov 2026 on the autopilot's
+160 s races with FAR_SHAPE: Desert City's count peaked at 13,168 (docs/follow-ups/v0.3.md)."""
+
+
+def far_offsets(shape, q: int) -> tuple[tuple[int, int], ...]:
+    """`shape`'s cells ((d ahead, c across)) as (row, column) offsets in heading quadrant `q` (`view_tables`' turn:
+    quadrant 0 looks to +row, 1 to -column, 2 to -row, 3 to +column)."""
+    turn = (lambda d, c: (d, c), lambda d, c: (c, -d), lambda d, c: (-d, c), lambda d, c: (c, d))
+    return tuple(turn[q](d, c) for d, c in shape)
+
+
+def far_viewed_set(rs: RomSet, views: dict | None = None, far_ids=FAR_IDS, shape=FAR_SHAPE,
+                   cap: int = POLYGON_CAP) -> RomSet:
+    """`rs` (a widened set, every course converted) with v0.3's view, in place of `viewed_set` (the chain's last
+    allocating step): every id gets its own four view-test tables, `views`' as `viewed_set` writes them (default
+    REVERSE_VIEW; VIEW_15, the stock view, for an id not named), so the game's own view test and what the race reads
+    of it are v0.2's; each is followed by its far table (course.far_table): for an id of `far_ids` the cap `cap`,
+    BLOCK_OFFSETS and `shape` turned to the quadrant, for any other id course.OBC and no cell. Then course.view_ids
+    and course.far_view. ConvertError for `views` as `viewed_set`, `far_ids` not ids 0-15, a `shape` that is not
+    left-right symmetric (as `view_tables`) or reaches into the block; CourseError from the course steps."""
+    rs = _romset(rs)
+    views = REVERSE_VIEW if views is None else views
+    if not isinstance(views, dict) or not all(is_int(k) and 0 <= k < C.COURSE_IDS for k in views):
+        raise ConvertError(f"views {views!r:.60} is not a dict of course ids to view cells")
+    if not isinstance(far_ids, (tuple, list)) or not all(is_int(k) and 0 <= k < C.COURSE_IDS for k in far_ids):
+        raise ConvertError(f"far ids {far_ids!r:.60} are not course ids")
+    if not isinstance(shape, (tuple, list)) or {(d, -c) for d, c in shape} != set(shape) \
+            or any(max(abs(d), abs(c)) <= 2 for d, c in shape):
+        raise ConvertError(f"far shape {shape!r:.60} is not a left-right symmetric tuple of (d, c) cells past the block")
+    step = C.VIEW_TEST_SIZE + C.FAR_TABLE_SIZE
+    ptrs = {}
+    for n in range(C.COURSE_IDS):
+        tables = view_tables(rs, views.get(n, VIEW_15))
+        blob = b"".join(tables[C.VIEW_TEST_SIZE * q:C.VIEW_TEST_SIZE * (q + 1)]
+                        + (C.far_table(cap, BLOCK_OFFSETS + far_offsets(shape, q)) if n in far_ids
+                           else C.far_table(C.OBC, ())) for q in range(4))
+        at = _first_fit(rs, "data", ID_DATA_FREE, len(blob), f"course {n}'s view-test and far tables")
+        rs = rs.with_patch("data", at, blob)
+        ptrs[n] = tuple(DATA_BASE + at + step * q for q in range(4))
+    return C.far_view(C.view_ids(rs, ptrs))
+
+
 LIFT: dict[int, float] = {7: 41.0}
 """Per course n, the world units its data and model are raised by before converting (`lifted_data`, `lifted_model`;
 converted_set applies them), so that every corner of its ground lies above 0 (Phase 10 Task 4, docs/spike/
@@ -1275,7 +1334,8 @@ def _clamped(uvs, modes) -> tuple:
 
 def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep: dict | None = None, *,
                   slot: int = 0, quad: tuple[float, float] | None = None, remesh: float | None = None,
-                  props=(), cell_cut: float | None = None, road_copy: tuple[float, float] | None = None) -> Scenery:
+                  props=(), cell_cut: float | None = None, road_copy: tuple[float, float] | None = None,
+                  depth: bool = False) -> Scenery:
     """A Dreamcast course model (`m`, a `CS{n}_POL.BIN`; `tex_blob` its `CS{n}_TEX.BIN`) as the Scenery of a converted
     course in slot `slot` of `rs` (0, Beginner's, on the original set; NEW_ID on a grown set: the colour tables, which
     pick the hues, are the original's on both). Phase 7 Task 5's rulings
@@ -1333,7 +1393,7 @@ def model_scenery(rs: RomSet, d: CourseData, m: pol.Model, tex_blob: bytes, keep
     base, indices = textures.course_textures(m, tex_blob, rs)
     copy = None if road_copy is None else (road_centres(tables.road_line(d), "road copy"), *road_copy)
     pieces, _ = _fit_coefficients(model.convert_model(kept, quad, {t: (h.width, h.height) for t, h in base.items()},
-                                                      cell_cut, copy),
+                                                      cell_cut, copy, depth),
                                   [(t.width, t.height) for t in m.textures], base)
     tables_ = T.colour_tables(rs)
     face = mesh_colours(m, base_kept, kept)
@@ -2934,8 +2994,10 @@ def _time_levels(c: golden.Course) -> dict[tuple[str, int], bytes]:
 
 def converted_set(rs: RomSet, disc: DcDisc, n: int, *, slot: int = 0, scenery: str = "keep",
                   layout: Layout | None = None, scenery_data: Scenery | None = None, variant: str = "",
-                  road_copy: bool = False) -> RomSet:
-    """`rs` with Dreamcast course `n` of `disc` (its CS_DATAn.BIN and 1ST_READ.BIN) converted into slot `slot`:
+                  road_copy: bool = False, thin: bool = True, depth: bool = False) -> RomSet:
+    """`rs` with Dreamcast course `n` of `disc` (its CS_DATAn.BIN and 1ST_READ.BIN) converted into slot `slot`
+    (`thin=False`, v0.3's far view: the model unthinned, THIN and REVERSE_THIN left out; the polygon cap is raised;
+    `depth=True`, v0.3: the model's polygons ask the custom MAME for the per-pixel depth test, model.DEPTH_TEST):
     `encode(rs, converted_course(rs, d, exe, n, ...), fields)`, `fields` RACE_FIELDS (+ SCENERY_FIELDS for
     `scenery="empty"`, + MODEL_FIELDS for `scenery="model"`: the set then has course.LIBRARY_BOUND_PATCH, applied
     for the model scenery only). With `scenery="model"` and no `scenery_data` the scenery is the course's own model:
@@ -2973,9 +3035,11 @@ def converted_set(rs: RomSet, disc: DcDisc, n: int, *, slot: int = 0, scenery: s
         plain = plain and shifted_data(plain, SHIFT[n])
     exe = disc.read(EXE_NAME)
     if scenery == "model" and scenery_data is None:
+        thin_ = thin
         thin, quad, remesh, props = ((THIN.get(n), QUAD.get(n), REMESH.get(n), NAMED_PROPS.get(n, ())) if variant == ""
                                      else (REVERSE_THIN.get(n), REVERSE_QUAD.get(n), REVERSE_REMESH.get(n),
                                            REVERSE_NAMED_PROPS.get(n, ())))
+        thin = thin if thin_ else None
         mn, tn = course_files(n, variant, kind="model"), course_files(n, variant, kind="textures")
         m = pol.decode_pol(disc.read(mn), mn)
         if n in LIFT:
@@ -2983,7 +3047,8 @@ def converted_set(rs: RomSet, disc: DcDisc, n: int, *, slot: int = 0, scenery: s
         if n in SHIFT:
             m = shifted_model(m, SHIFT[n])
         scenery_data = model_scenery(rs, d, m, disc.read(tn), thin, slot=slot, quad=quad, remesh=remesh, props=props,
-                                     cell_cut=CELL_CUT.get(n), road_copy=ROAD_COPY.get(n) if road_copy else None)
+                                     cell_cut=CELL_CUT.get(n), road_copy=ROAD_COPY.get(n) if road_copy else None,
+                                     depth=depth)
     c = converted_course(rs, d, exe, n, slot=slot, scenery=scenery, layout=layout, scenery_data=scenery_data,
                          variant=variant, plain=plain)
     if variant == "R" and n < 3:                    # the arcade's segment-keyed tables on the reverse road

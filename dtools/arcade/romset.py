@@ -91,7 +91,8 @@ RESERVED = {
                 (0x1FE00, 0x200, "grow_rankings' sixteen-id ranking defaults and time bases (course.RANK_HOME, "
                                  "RANK_SIZE)"),
                 (0x3CE98, 0x400, "the shared empty actor table (build.EMPTY_ACTORS: 256 zero words at "
-                                 "build.EMPTY_AT, every course without actors names it)")),
+                                 "build.EMPTY_AT, every course without actors names it)"),
+                (0x3FF00, 0x100, "the far view's hook (course.FAR_CODE, FAR_SIZE)")),
     "data": ((0x1F00000, 0x20000, "the sixteen-entry select's data (select.DATA_AT, DATA_SPAN)"),
              (0x1001580, 0x260, "the new ids' read-only SRAM stand-in (course.SRAM_SINK, SRAM_SINK_SIZE)"),
              (0x1000000, 0x1580, "grow_ids' sixteen-entry tables and records (course.ID_HOME up to SRAM_SINK)")),

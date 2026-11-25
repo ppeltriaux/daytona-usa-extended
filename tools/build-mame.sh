@@ -4,7 +4,9 @@
 #
 # The build is MAME 0.289 (`mame0289`) with tools/mame-daytona-rom-space.patch applied: the `daytona` ROM regions grown
 # as far as the game's address decoding reaches, the new areas loaded from five optional files (docs/formats/
-# model2-rom-images.md). The stock set runs on it unchanged. The binary is
+# model2-rom-images.md), and (v0.3) a per-pixel depth test in the Model 2 renderer for the polygon records that ask
+# for it with attribute bit 7, which no original record sets (docs/formats/model2-polygon-rom.md, "The depth test").
+# The stock set runs on it unchanged. The binary is
 # build/mame/model2; dtools.config.custom_mame() finds it through the stamp written at the end (the patch's SHA-256).
 # The installed `mame` stays the reference for every other test.
 #
@@ -24,6 +26,7 @@ DIR="$ROOT/build/mame"
 PATCH="$ROOT/tools/mame-daytona-rom-space.patch"
 STAMP="$DIR/.daytona-rom-space"
 DRIVER=src/mame/sega/model2.cpp
+PATCHED="$DRIVER src/mame/sega/model2.h src/mame/sega/model2_v.cpp src/mame/sega/model2rd.ipp"   # the patch's files
 JOBS="${MAME_JOBS:-$(( $(sysctl -n hw.ncpu) > 3 ? $(sysctl -n hw.ncpu) - 2 : 1 ))}"
 command -v brew >/dev/null || { echo "Homebrew required"; exit 1; }
 for dep in sdl3 pkgconf; do
@@ -36,14 +39,14 @@ fi
 cd "$DIR"
 git fetch --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
 if [ "$(git rev-parse HEAD)" != "$(git rev-parse "$TAG^{commit}")" ]; then
-  git checkout -q -- "$DRIVER"                       # the patch is re-applied below
+  git checkout -q -- $PATCHED                       # the patch is re-applied below
   git checkout -q "$TAG"
 fi
 rm -f "$STAMP"                                       # no stamp until this patch is built
 if git apply --reverse --check "$PATCH" 2>/dev/null; then
   echo "patch already applied: $PATCH"
 else
-  git checkout -q -- "$DRIVER"                       # another patch, or none: start from the tag's driver
+  git checkout -q -- $PATCHED                       # another patch, or none: start from the tag's driver
   git apply "$PATCH"
   echo "patch applied: $PATCH"
 fi

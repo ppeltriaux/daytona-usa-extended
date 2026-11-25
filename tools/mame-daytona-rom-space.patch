@@ -48,3 +48,150 @@ index 899828e..11cf800 100644
  
  	ROM_REGION( 0x20000, "cpu3", 0) // Communication program
  	ROM_LOAD( "epr-16726.bin", 0x000000, 0x020000, CRC(c179b8c7) SHA1(86d3e65c77fb53b1d380b629348f4ab5b3d39228) )
+diff --git a/src/mame/sega/model2.h b/src/mame/sega/model2.h
+index fb59a45..57093a3 100644
+--- a/src/mame/sega/model2.h
++++ b/src/mame/sega/model2.h
+@@ -651,6 +651,7 @@ struct m2_poly_extra_data
+ 	u32      utexy;
+ 	s32      texlod;
+ 	u8       luma;
++	u8       zbuf;
+ };
+ 
+ // 0x10000 = size of the poly_sorted_list array
+@@ -669,6 +670,7 @@ public:
+ 		m_state(state),
+ 		m_destmap(512, 512),
+ 		m_fillmap(512, 512),
++		m_zmap(512, 512),
+ 		m_xoffs(90),
+ 		m_yoffs(-8)
+ 	{
+@@ -693,6 +695,7 @@ private:
+ 	model2_state &m_state;
+ 	bitmap_rgb32 m_destmap;
+ 	bitmap_ind8 m_fillmap;
++	bitmap_rgb32 m_zmap;                            // 1/z (float bits) of each pixel a depth-tested polygon owns
+ 	int16_t m_xoffs, m_yoffs;
+ 
+ 	template <bool Translucent>
+@@ -748,6 +751,7 @@ struct model2_state::polygon
+ 	int16_t         viewport[4] = { 0, 0, 0, 0 };
+ 	int16_t         center[2] = { 0, 0 };
+ 	u8              window = 0;
++	u8              zbuf = 0;                       // depth tested per pixel (attr bit 7; Daytona USA Extended)
+ };
+ 
+ struct model2_state::quad_m2
+diff --git a/src/mame/sega/model2_v.cpp b/src/mame/sega/model2_v.cpp
+index 3a5bfa5..b0a6309 100644
+--- a/src/mame/sega/model2_v.cpp
++++ b/src/mame/sega/model2_v.cpp
+@@ -510,6 +510,9 @@ void model2_state::model2_3d_process_polygon(raster_state *raster, u32 attr)
+ 			/* set the window */
+ 			poly->window = raster->cur_window;
+ 
++			/* Daytona USA Extended: attr bit 7 (unused by the hardware's records) asks for a per-pixel depth test */
++			poly->zbuf = (attr >> 7) & 1;
++
+ 			poly->num_vertices = clipped_verts;
+ 
+ 			for (int i = 0; i < clipped_verts; i++)
+@@ -577,6 +580,7 @@ void model2_renderer::model2_3d_render(polygon *poly, const rectangle &cliprect)
+ 	extra.colorbase = (poly->texheader[3] >> 6) & 0x3ff;
+ 	extra.luma = poly->luma;
+ 	extra.texlod = poly->texlod;
++	extra.zbuf = poly->zbuf;
+ 
+ 	if (renderer & 2)
+ 	{
+@@ -607,6 +611,12 @@ void model2_renderer::model2_3d_render(polygon *poly, const rectangle &cliprect)
+ 			poly->v[i].pv = poly->v[i].pv * poly->v[i].pz * (1.0f / 8.0f);
+ 		}
+ 	}
++	else if (poly->zbuf)
++	{
++		// an untextured depth-tested polygon: 1/z per pixel, as the textured path's
++		for (int i = 0; i < poly->num_vertices; i++)
++			poly->v[i].pz = 1.0f / (poly->v[i].pz + std::numeric_limits<float>::min());
++	}
+ 
+ 	switch (poly->num_vertices)
+ 	{
+diff --git a/src/mame/sega/model2rd.ipp b/src/mame/sega/model2rd.ipp
+index a02143b..d7fe20c 100644
+--- a/src/mame/sega/model2rd.ipp
++++ b/src/mame/sega/model2rd.ipp
+@@ -48,6 +48,10 @@ void model2_renderer::draw_scanline_solid(int32_t scanline, const extent_t& exte
+ 	model2_state *state = object.state;
+ 	u32 *const p = &m_destmap.pix(scanline);
+ 	u8 *const fill = &m_fillmap.pix(scanline);
++	u32 *const zmap = &m_zmap.pix(scanline);
++	const bool zbuf = object.zbuf != 0;
++	float ooz = zbuf ? extent.param[0].start : 0.0F;
++	float dooz = zbuf ? extent.param[0].dpdx : 0.0F;
+ 	u8  *gamma_value = &state->m_gamma_table[0];
+ 
+ 	// extract color information
+@@ -87,11 +91,25 @@ void model2_renderer::draw_scanline_solid(int32_t scanline, const extent_t& exte
+ 	int x = extent.startx;
+ 	int dx = checker ? 2 : 1;
+ 	if (checker && !((x ^ scanline) & 1))
++	{
+ 		x++;
++		ooz += dooz;
++	}
++	if (checker)
++		dooz *= 2.0F;
+ 
+-	for ( ; x < extent.stopx; x += dx)
++	for ( ; x < extent.stopx; x += dx, ooz += dooz)
+ 	{
+-		if (fill[x] == 0)
++		if (zbuf)
++		{
++			if (fill[x] == 0 || (fill[x] == 0x7f && ooz > std::bit_cast<float>(zmap[x])))
++			{
++				p[x] = color;
++				fill[x] = 0x7f;
++				zmap[x] = std::bit_cast<u32>(ooz);
++			}
++		}
++		else if (fill[x] == 0)
+ 		{
+ 			p[x] = color;
+ 			fill[x] = 0xff;
+@@ -247,6 +265,8 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
+ 	model2_state *state = object.state;
+ 	u32 *const p = &m_destmap.pix(scanline);
+ 	u8 *const fill = &m_fillmap.pix(scanline);
++	u32 *const zmap = &m_zmap.pix(scanline);
++	const bool zbuf = object.zbuf != 0;
+ 
+ 	/* extract color information */
+ 	const u16 *colortable_r = &state->m_colorxlat[0x0000/2];
+@@ -295,7 +315,7 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
+ 
+ 	for ( ; x < extent.stopx; x += dx, ooz += dooz, uoz += duoz, voz += dvoz)
+ 	{
+-		if (fill[x] > 0)
++		if (fill[x] > 0 && !(zbuf && fill[x] == 0x7f && ooz > std::bit_cast<float>(zmap[x])))
+ 			continue;
+ 
+ 		float const z = 1.0F / ooz;
+@@ -349,7 +369,13 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
+ 		tb = gamma_value[tb];
+ 
+ 		p[x] = rgb_t(tr, tg, tb);
+-		fill[x] = 0xff;
++		if (zbuf)
++		{
++			fill[x] = 0x7f;
++			zmap[x] = std::bit_cast<u32>(ooz);
++		}
++		else
++			fill[x] = 0xff;
+ 	}
+ }
+ 

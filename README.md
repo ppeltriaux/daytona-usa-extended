@@ -3,14 +3,14 @@
 Daytona USA Extended is the 1994 Sega Model 2 arcade *Daytona USA* with eight courses: its own three, byte for byte
 (Three Seven Speedway, Dinosaur Canyon, Sea-Side Street Galaxy) and five converted from the Dreamcast's *Daytona USA*
 (2001): Desert City, National Park Speedway, Circuit Pixie, Rin Rin Rink and Mermaid Lake. Each of the eight also runs
-in reverse. The five race on the arcade's own engine in MAME: its field of cars, its checkpoints, its render rate. The
-project page:
+in reverse. The five race on the arcade's own engine in MAME: its field of cars, its checkpoints. Since v0.3 they draw
+further and in more detail than the arcade board could (see "Changes"). The project page:
 https://continuearcade.com/daytona-usa-extended/
 
 This repository is a converter: one command builds the game on your machine from your own copies of the arcade game and
 of the Dreamcast disc. It holds none of either (see "Legal").
 
-> **v0.2 is an early release, still under development.** All eight courses and their reverses load and race on the
+> **v0.3 is an early release, still under development.** All eight courses and their reverses load and race on the
 > arcade's engine, but laps and opponents are not tuned yet and the new courses have rendering defects: see "Known
 > issues".
 
@@ -22,8 +22,8 @@ of the Dreamcast disc. It holds none of either (see "Legal").
   or its `.cue` with the track `.bin` files beside it. Other releases and regions are refused.
 - **Python 3.12 or newer** (numpy is installed by `pip`).
 - **On Windows:** Python 3.12 or newer from python.org (tick "Add python.exe to PATH"), and the prebuilt MAME from this
-  repository's Releases page (https://github.com/ppeltriaux/daytona-usa-extended/releases; the latest release, v0.1.2
-  or later): `daytona-usa-extended-mame-0.289-win64.zip` (`mame.exe`, linked statically so it needs no DLLs, MAME's
+  repository's Releases page (https://github.com/ppeltriaux/daytona-usa-extended/releases; the latest release: v0.3
+  needs v0.3's MAME): `daytona-usa-extended-mame-0.289-win64.zip` (`mame.exe`, linked statically so it needs no DLLs, MAME's
   licences, the patch and a README.txt). Unzip it anywhere. The `.7z` works as on the other systems: no `bsdtar` is
   needed. Windows' own `tar.exe` is tried first (current Windows reads the `.7z`), then py7zr (installed with
   `dtools` on Python 3.12 to 3.14). On Python 3.15 there is no py7zr yet, so the `.7z` is read by `tar.exe`; if your
@@ -90,6 +90,17 @@ best times.
 
 ## Changes
 
+- **v0.3:** the five Dreamcast courses and their reverses draw further and cleaner. They show two more rows of
+  scenery cells ahead and one more to each side, and always the whole block round the car (the arcade opens at most
+  15 cells a frame; these courses now draw 45), with the frame's polygon limit raised from 5,000 to 28,000 for them
+  and their models no longer thinned: up to about 13,000 polygons a frame on Desert City. Their scenery is drawn with
+  a per-pixel depth test, as on the Dreamcast, instead of the Model 2's polygon sorting: on Rin Rin Rink the grass no
+  longer paints over the road on the bridge and the trackside panels' feet no longer show through the road. The depth
+  test is a change to MAME's Model 2 renderer, used only by polygons that ask for it; the arcade's three courses and
+  their reverses do not, and race and draw as before. **v0.3 needs v0.3's MAME:** rebuild it with
+  `tools/build-mame.sh` (or take v0.3's Windows zip), and rebuild the set; with an older patched MAME the set runs
+  but without the depth test. This goes past what a real Model 2 board could draw: v0.3 is for MAME. Best times are
+  kept.
 - **v0.2:** every course in reverse. A Course Direction screen after Circuit Select picks NORMAL or REVERSE; the eight
   courses in reverse (the arcade's three included) race with their own time limits (measured, as the five converted
   courses', against the computer-driven field), the Dreamcast's reverse pit stalls and their own best-time tables. The
@@ -118,14 +129,17 @@ best times.
 - **Time limits are measured, not played in:** courses 3 to 7 and all eight reverses take their times from the
   computer-driven field's pace, with the arcade's own courses' slack; the normal race at the default difficulty was driven in MAME, the long races
   and other difficulties are derived. Their laps and opponents are not tuned. The arcade's three keep their own.
-- **Two courses draw a shorter view:** Circuit Pixie and Rin Rin Rink draw less far ahead (far scenery appears a little
-  later), so they stay within the arcade's polygon budget.
+- **Beyond the arcade board:** since v0.3 the five new courses and their reverses draw up to about 13,000 polygons
+  a frame and use a depth test the Model 2 does not have. MAME does not model the board's drawing time, so the game
+  holds its rate there; a real board would not. Animated scenery (flags, banners) still appears at the arcade's
+  distance, later than the scenery around it.
 - **Mermaid Lake** was raised 41 units to fit the arcade's ground; an invisible lift is possible.
-- **Rendering defects on the five new courses:** one flat grey frame about a second after the start, and thin black
-  seams cross the road (seen on National Park Speedway and Circuit Pixie). The background can still show through for a
-  moment at a few spots: beside the road on National Park Speedway, at the edge of the ground when you run wide off
-  the road, and once a lap on Three Seven Speedway in reverse. On Desert City the farthest scenery can drop out for a
-  moment where the most is in view.
+- **Rendering defects on the five new courses:** these were seen on v0.2 and have not been looked at again on v0.3,
+  which draws these courses differently: one flat grey frame about a second after the start, thin black seams across
+  the road (National Park Speedway and Circuit Pixie), and the background showing for a moment beside the road on
+  National Park Speedway and at the edge of the ground when you run wide. v0.3's depth test was checked on Rin Rin
+  Rink only. On Three Seven Speedway in reverse the background still shows once a lap (the arcade's own course: not
+  changed by v0.3).
 - **Windows:** built and tested in GitHub Actions on Windows Server (`windows-latest`); the set has not yet been built
   and played on a Windows PC.
 - **Tested only in MAME:** the set was played on macOS on Apple silicon only. Nothing was tried on real hardware. `dtools build` was

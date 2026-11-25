@@ -1449,3 +1449,34 @@ def test_road_copy():
                 (road, 16.0), (road, True, 10.0), 5):
         with pytest.raises(ConvertError):
             model.convert_model(m, road_copy=bad)
+
+
+def test_depth_flag():
+    """convert_model's `depth` (v0.3; Pascal's drives of Rin Rin Rink: grass over the road under the bridge, panel
+    feet through the road): every polygon record carries model.DEPTH_TEST (attr bit 7, the custom MAME's per-pixel
+    depth test) and nothing else differs: the same cells, objects, record counts, corners, links and every other
+    attribute bit; a move record (which draws nothing) does not carry it. Without `depth` no record has the bit (the
+    default: every earlier set's bytes). The bit lies in the 18 the geometry engine passes to the rasteriser and is
+    none the hardware's records use (docs/formats/model2-polygon-rom.md). A `depth` that is not a bool is refused."""
+    assert model.DEPTH_TEST == 0x80 and model.DEPTH_TEST & 0x3FFFF and not model.DEPTH_TEST & 0x21F03
+    road = [(-700.0 + 20 * k, 180.0) for k in range(20)]
+    for m, kw in ((_long_strip(x0=-505.0, x1=-495.0, z0=170.0, z1=190.0), {"road_copy": (road, 16.0, 10.0)}),
+                  (_wall(-505.0, 170.0, 190.0), {})):
+        plain, deep = model.convert_model(m, **kw), model.convert_model(m, depth=True, **kw)
+        assert model.convert_model(m, depth=False, **kw) == plain and sorted(plain) == sorted(deep)
+        seen = 0
+        for cell in plain:
+            assert len(plain[cell]) == len(deep[cell])
+            for a, b in zip(plain[cell], deep[cell]):
+                assert (a.textures, a.uvs, a.sources) == (b.textures, b.uvs, b.sources)
+                assert len(a.obj.records) == len(b.obj.records) and (a.obj.seed0, a.obj.seed1) == (b.obj.seed0, b.obj.seed1)
+                for ra, rb in zip(a.obj.records, b.obj.records):
+                    assert not ra.attr & model.DEPTH_TEST
+                    move = ra.attr == model.MOVE_ATTR
+                    assert rb.attr == (ra.attr if move else ra.attr | model.DEPTH_TEST)
+                    assert dataclasses.replace(rb, attr=ra.attr) == ra
+                    seen += not move
+        assert seen
+    for bad in (1, None, "yes"):
+        with pytest.raises(ConvertError):
+            model.convert_model(_wall(-505.0, 170.0, 190.0), depth=bad)

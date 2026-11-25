@@ -2900,20 +2900,20 @@ def test_empty_actor_table_written_once(rs):
 
 
 def test_program_room(desert_mirror):
-    """build.program_room: the free bytes of PROGRAM_FREE (0xff and owned by nothing). 11,624 on the stock and the
-    grown set (12,648 less the shared table's reserved 1,024); Desert City's conversion and its mirror take none of
+    """build.program_room: the free bytes of PROGRAM_FREE (0xff and owned by nothing). 11,368 on the stock and the
+    grown set (12,648 less the shared table's reserved 1,024 and, since v0.3, the far view's hook's 256); Desert City's conversion and its mirror take none of
     it (both share EMPTY_ACTORS); the mirrors of the originals take their own tables and lists (1,896 / 2,588 /
-    1,828); the final chain (grow_rankings before the select, as test_mirrors_mame.final_set) leaves 5,312, where
-    Phase 9 left 4,288. M5's eight entries (courses 4-7 converted, their mirrors 12-15) have no actors, so each shares
+    1,828); the final chain (grow_rankings before the select, as test_mirrors_mame.final_set) leaves 5,056 (5,312 before v0.3's
+    256 for the far view), where Phase 9 left 4,288. M5's eight entries (courses 4-7 converted, their mirrors 12-15) have no actors, so each shares
     the table (per course: test_every_conversion_shares_the_empty_table; a mirror writing it itself:
-    test_mirror_writes_the_empty_table): they need none of the run, and the 5,312 bytes stay for a later course with
+    test_mirror_writes_the_empty_table): they need none of the run, and the 5,056 bytes stay for a later course with
     actors."""
     from dtools.arcade import mirror as M
     from dtools.arcade import select as S
     phase8, c3, before, after, full = desert_mirror
     stock = _romset()
     widened = C.widen_ids(C.guard_new_ids(C.grow_ids(stock)))
-    assert build.program_room(stock) == build.program_room(widened) == 12648 - 1024 == 11624
+    assert build.program_room(stock) == build.program_room(widened) == 12648 - 1024 - 256 == 11368
     assert build.program_room(c3) == build.program_room(widened)
     rooms = [build.program_room(c3)]
     s = c3
@@ -2921,10 +2921,10 @@ def test_program_room(desert_mirror):
         s = M.mirrored_entry(s, o)
         rooms.append(build.program_room(s))
     assert [a - b for a, b in zip(rooms, rooms[1:])] == [1896, 2588, 1828]
-    assert build.program_room(after) == build.program_room(before) == rooms[-1] == 5312
+    assert build.program_room(after) == build.program_room(before) == rooms[-1] == 5056
     final = S.patch_select(C.grow_rankings(after), S.M4B_ENTRIES)
     print(f"\nprogram room: stock {build.program_room(stock)}, final chain {build.program_room(final)} (Phase 9: 4288)")
-    assert build.program_room(final) == 5312
+    assert build.program_room(final) == 5056
     for bad in (None, "rs", 3):
         with pytest.raises(ConvertError, match="RomSet"):
             build.program_room(bad)
