@@ -4,7 +4,8 @@ lossless decoder and encoder.
 A `_TEX.BIN` has no header: it is the texture data that its `_POL.BIN`'s texture table points at (CS with CS, VCS with
 VCS; docs/formats/dreamcast-disc.md, "Textures"). Each table entry gives width, height, a format word and an offset.
 The format word is the PVR file's: low byte the pixel format (`PIXEL_FORMATS`: the PowerVR texture control word's
-codes 0-2), next byte the layout (`LAYOUTS`: 1 twiddled, 2 twiddled with mipmaps, 3 VQ, 4 VQ with mipmaps); the
+codes 0-2), next byte the layout (`LAYOUTS`: 1 twiddled, 2 twiddled with mipmaps, 3 VQ, 4 VQ with mipmaps, 0x0d a
+twiddled rectangle, the car sets'); the
 other bytes are zero. Words outside these are refused, not guessed.
 
 Stored forms (all 16-bit texels, little-endian, PowerVR twiddled order: bit 2i of the index is y bit i, bit 2i+1 is
@@ -32,7 +33,8 @@ from dtools.dc.pol import TexEntry
 from dtools.arcade.tablebase import _int, _seq, is_int
 
 PIXEL_FORMATS = {0: "ARGB1555", 1: "RGB565", 2: "ARGB4444"}
-LAYOUTS = {1: "twiddled", 2: "twiddled_mip", 3: "vq", 4: "vq_mip"}
+LAYOUTS = {1: "twiddled", 2: "twiddled_mip", 3: "vq", 4: "vq_mip", 0x0D: "twiddled_rect"}
+"""0x0d (the car sets, v0.4): a twiddled rectangle, stored as "twiddled" is; its own name so the word re-encodes."""
 MIPPED = ("twiddled_mip", "vq_mip")
 VQ = ("vq", "vq_mip")
 CODEBOOK_SIZE = 256 * 8         # 256 entries of four 16-bit texels
@@ -164,7 +166,7 @@ def stored_size(layout: str, w: int, h: int) -> int:
 
 
 def _stored_size(layout: str, w: int, h: int) -> int:
-    if layout == "twiddled":
+    if layout in ("twiddled", "twiddled_rect"):
         return 2 * w * h
     if layout == "twiddled_mip":
         return MIP_PREAMBLE + sum(2 * s * s for s in _mip_sides(w))

@@ -87,6 +87,26 @@ before (checked: a recorded drive of a set without the bit replays to the same p
 unpatched build), and the converter sets it only on the Dreamcast models' polygons (`model.DEPTH_TEST`,
 `convert_model(..., depth=True)`; `release_set`'s v0.3 chain). Stock MAME and the hardware ignore the bit.
 
+### True-colour textures (bit 6; the custom MAME only, v0.4)
+
+Bit 6, as bit 7, is passed on by the geometry engine and set by no original record. With the patch a textured polygon
+that has it takes its texels from the texture ROM instead of the sheets:
+
+- its texture header (four words at `tha`) keeps word 0 (the width and height, `32 << n`; bit 14 textured; bit 15
+  the checker; bit 13, translucent, is not used) and holds in words 2 and 3 the low and high half of a **word
+  address** in the textures region; word 1 is not read;
+- there, `width x height` words, rows top first, each **ARGB1555**: bit 15 set for an opaque texel, clear for a
+  transparent one (the pixel is skipped when its nearest texel is transparent; a transparent neighbour takes the
+  nearest texel's colour in the blend);
+- drawn bilinear and repeated on both axes, without mipmaps or microtexture, each channel times the polygon's luma
+  (full at luma 160 and above); the checker and the depth test apply as for any polygon;
+- texture points are the usual ones (v then u, 1/8 texel).
+
+The converter sets it on the Dreamcast cars' polygons only (`model.RGB_TEX`, `model.convert_object(..., rgb=True)`,
+`convert/car.py`; the texels, headers and points go to the textures region's second custom area, `build.car_set`):
+the Model 2's own textures hold 16 shades of one palette entry a polygon and its two sheets are full. A set with no
+such polygon draws as before. Stock MAME and the hardware ignore the bit.
+
 ## Strip and corner rule (rasterizer)
 
 The geometry engine pushes the stream to `model2_3d_push` (line 769); command `0x01` collects it in

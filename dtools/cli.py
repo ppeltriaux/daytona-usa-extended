@@ -57,7 +57,7 @@ def _build(roms: Path, disc: Path, out: Path, checks: list[str]) -> int:
     try:
         rs = RomSet.from_zip(roms / release.ROM_ZIP)
         with DcDisc.open(disc, out=out / release.WORK) as dc:
-            built = release.release_set(rs, dc)
+            built = release.release_set(rs, dc, car=release.RELEASE_CAR)
         path = release.write_release(built, out, roms, checks=checks)
     except Exception as e:      # noqa: BLE001  one line, never a traceback (DecodeError, OSError, anything else)
         print(f"build failed: {_one_line(e)}", file=sys.stderr)

@@ -584,9 +584,17 @@ mame-daytona-rom-space.patch; docs/formats/model2-polygon-rom.md, "The depth tes
 it (101,462 records of the three courses read), and stock MAME and the hardware ignore it."""
 
 
-def _attr(n: int, link: int, p: _Poly, depth: bool = False) -> int:
+RGB_TEX = 1 << 6
+"""Attr bit 6 (v0.4): the polygon's texture is true colour. Its texture header keeps word 0 (the size, the checker
+and textured bits) and holds in words 2 and 3 the word address, in the texture ROM, of width x height ARGB1555 words,
+top row first (bit 15 clear: a transparent texel); the custom MAME draws it bilinear, repeated, lit by the polygon's
+luma (tools/mame-daytona-rom-space.patch; docs/formats/model2-polygon-rom.md, "True-colour textures"). As DEPTH_TEST,
+no record of the original set has the bit, and stock MAME and the hardware ignore it."""
+
+
+def _attr(n: int, link: int, p: _Poly, depth: bool = False, rgb: bool = False) -> int:
     return ((1 if n == 4 else 2) | link << 8 | ZSORT << 10 | STEP << 12 | (DOUBLE_SIDED if p.double else 0)
-            | TEX_PARAM << 18 | link << 23 | p.coef << 27 | (DEPTH_TEST if depth else 0))
+            | TEX_PARAM << 18 | link << 23 | p.coef << 27 | (DEPTH_TEST if depth else 0) | (RGB_TEX if rgb else 0))
 
 
 def _f32_point(p) -> tuple[float, float, float]:
@@ -652,7 +660,7 @@ def _link(p: _Poly, nxt: _Poly | None) -> int:
     return DEAD_LINK
 
 
-def _pieces(polys: list[_Poly], depth: bool = False) -> tuple[Piece, ...]:
+def _pieces(polys: list[_Poly], depth: bool = False, rgb: bool = False) -> tuple[Piece, ...]:
     order = _chain(polys)
     pieces = []
     recs: list = []
@@ -681,10 +689,25 @@ def _pieces(polys: list[_Poly], depth: bool = False) -> tuple[Piece, ...]:
         face = _newell(p.corners)
         normal = _f32_point(-face / np.linalg.norm(face))
         rest = [_f32_point(c) for c in p.corners[2:]]
-        recs.append(P.Record(_attr(n, _link(p, nxt), p, depth), normal, rest[0], rest[1] if n == 4 else None))
+        recs.append(P.Record(_attr(n, _link(p, nxt), p, depth, rgb), normal, rest[0], rest[1] if n == 4 else None))
         meta.append((p.texture, p.uvs, p.sources))
     close()
     return tuple(pieces)
+
+
+def convert_object(m, points=None, *, rgb: bool = False) -> tuple[Piece, ...]:
+    """The whole model `m` as Pieces, not filed by cell: a part of a car (v0.4; dtools/convert/car.py), drawn under
+    the car's own matrix. The polygons are `convert_model`'s (the same triangles, quads and texture-point cut with
+    `points`); every drawn record carries DEPTH_TEST and, with `rgb`, RGB_TEX. ConvertError as `convert_model`, and
+    for an `rgb` that is not a bool."""
+    if not isinstance(rgb, bool):
+        raise ConvertError(f"rgb {rgb!r:.40} is not a bool")
+    if points is not None and not (isinstance(points, dict) and all(
+            is_int(t) and isinstance(v, tuple) and len(v) == 2 and all(is_int(x) and x > 0 for x in v)
+            for t, v in points.items())):
+        raise ConvertError(f"points {points!r:.60} is not a dict of texture index -> (width, height)")
+    sizes = [(int(t.width), int(t.height)) for t in m.textures]
+    return _pieces([q for p0 in _polygons(m, _quad(None)) for q in _cut(p0, points, sizes)], True, rgb)
 
 
 def triangle_meshes(m) -> tuple[tuple[int, int], ...]:

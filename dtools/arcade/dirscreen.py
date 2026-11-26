@@ -75,7 +75,7 @@ BANNER_DST = TL.TILE_RAM[0] + 2 * (1 * TL.TILE_LAYER + 8)  # layer 0, row 1, col
 MISSION_LAYERS = 0x00225AD0         # state 7's tail after `mov 8`: Mission Select's background to layer 2, layer 0
                                     # cleared (0x1bb2c), its boxes (0x226ab8) and banner: called, it returns here
 DATA_AT = C.DATA_BASE + 0x01FC0000  # the screen's graphics: the custom data run's last 256 KB (title.TITLE_RUN's end,
-DATA_SPAN = 0x40000                 # which the title's bytes, from that run's start, never reach)
+DATA_SPAN = 0x30000                 # which the title's bytes, from that run's start, never reach)
 
 
 PANEL_DST = TL.TILE_RAM[0] + 2 * (8 * TL.TILE_LAYER + 22)   # layer 0, row 8, column 22: the panel at the top centre

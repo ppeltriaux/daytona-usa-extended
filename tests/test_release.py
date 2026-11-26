@@ -215,6 +215,24 @@ def _release(romset_zip, disc) -> RomSet:  # noqa: F811
     return _RELEASE[str(romset_zip)]
 
 
+def _release_cars(romset_zip, disc) -> RomSet:  # noqa: F811
+    """release_set(..., car=R.RELEASE_CAR) of the player's set and disc: the set `dtools build` writes (v0.4), built
+    once per session."""
+    key = (str(romset_zip), "cars")
+    if key not in _RELEASE:
+        _RELEASE[key] = R.release_set(RomSet.from_zip(romset_zip), disc, car=R.RELEASE_CAR)
+    return _RELEASE[key]
+
+
+RELEASE_SHA1_CARS = {"program": "d2f85b880637a8663a9d7f1274cb0adab3416e8a",
+                     "data": "1a44af9c98f54df18568c575a827527152d00131",
+                     "copro_data": "b63256bc55ad101e4415c88fe3b0b5ff0fe119f1",
+                     "polygons": "36c59ee6ed4314d313ac57337e9b63416af24b21",
+                     "textures": "5377081bbe4ba45baf26bff76e968d236883492b"}
+"""`release_set(..., car=R.RELEASE_CAR)`: the set `dtools build` writes since v0.4 (26 Nov 2026, in development): the
+release set (RELEASE_SHA1, v0.3's, which `release_set` still builds by default) with the four Dreamcast cars and
+the Dreamcast's forty opponents filed (build.car_set with field), the car choice's hooks (course.car_choice) and the Car Select screen (carscreen.patch_cars). The
+copro_data region is v0.3's."""
 RELEASE_SHA1 = {"program": "27370a5e3cac58fb149f4d5af6e75a8be7c76436",
                 "data": "89b8cb80b968dbc49b00a3a65bc28245e67a1a95",
                 "copro_data": "b63256bc55ad101e4415c88fe3b0b5ff0fe119f1",
@@ -298,6 +316,20 @@ def test_release_without_far_view_is_v02(romset_zip, disc):  # noqa: F811
     import hashlib
     rel = R.release_set(RomSet.from_zip(romset_zip), disc, far_view=False)
     assert {r: hashlib.sha1(getattr(rel, r)).hexdigest() for r in RELEASE_SHA1_V02} == RELEASE_SHA1_V02
+
+
+def test_release_with_cars_pinned(romset_zip, disc):  # noqa: F811
+    """The set `dtools build` writes (v0.4) is RELEASE_SHA1_CARS region for region, and it is the release set with
+    the three car steps applied (so the default `release_set` stays v0.3's, byte for byte, under them)."""
+    import hashlib
+    from dtools.arcade import carscreen
+    from dtools.arcade import course as C2
+    rel = _release_cars(romset_zip, disc)
+    assert {r: hashlib.sha1(getattr(rel, r)).hexdigest() for r in RELEASE_SHA1_CARS} == RELEASE_SHA1_CARS
+    assert R.RELEASE_CAR == 0 and R.RELEASE_CARS == (1, 2, 3, 4)
+    steps = carscreen.patch_cars(C2.car_choice(build.car_set(_release(romset_zip, disc), disc, R.RELEASE_CARS, field=True), default=0,
+                                               cap=build.POLYGON_CAP), build.POLYGON_CAP)
+    assert all(getattr(steps, r) == getattr(rel, r) for r in RELEASE_SHA1_CARS)
 
 
 def test_release_set_pinned(romset_zip, disc):  # noqa: F811

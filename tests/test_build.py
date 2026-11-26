@@ -56,7 +56,7 @@ def test_log_names_map_to_env(tmp_path):
     assert build.LOG_ENVS == {"ground": "DAYTONA_GROUND_LOG", "rate": "DAYTONA_RATE_LOG",
                               "geo": "DAYTONA_GEO_LOG", "progress": "DAYTONA_PROGRESS_LOG",
                               "cells": "DAYTONA_CELLS_LOG", "pit": "DAYTONA_PIT_LOG",
-                              "holes": "DAYTONA_HOLES_LOG"}
+                              "holes": "DAYTONA_HOLES_LOG", "car": "DAYTONA_CAR_LOG"}
     with pytest.raises(MameError, match="unknown log"):
         build.run_set(None, tmp_path, 1, tmp_path / "daytona.zip", {}, logs=("nope",))
 

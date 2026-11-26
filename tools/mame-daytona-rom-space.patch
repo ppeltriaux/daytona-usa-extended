@@ -1,5 +1,5 @@
 diff --git a/src/mame/sega/model2.cpp b/src/mame/sega/model2.cpp
-index 899828e..11cf800 100644
+index 899828e6..11cf8009 100644
 --- a/src/mame/sega/model2.cpp
 +++ b/src/mame/sega/model2.cpp
 @@ -6742,7 +6742,10 @@ ROM_START( daytona ) /* Daytona USA (Japan, Revision A), Original Model 2 w/Mode
@@ -49,18 +49,19 @@ index 899828e..11cf800 100644
  	ROM_REGION( 0x20000, "cpu3", 0) // Communication program
  	ROM_LOAD( "epr-16726.bin", 0x000000, 0x020000, CRC(c179b8c7) SHA1(86d3e65c77fb53b1d380b629348f4ab5b3d39228) )
 diff --git a/src/mame/sega/model2.h b/src/mame/sega/model2.h
-index fb59a45..57093a3 100644
+index fb59a458..5561d338 100644
 --- a/src/mame/sega/model2.h
 +++ b/src/mame/sega/model2.h
-@@ -651,6 +651,7 @@ struct m2_poly_extra_data
+@@ -651,6 +651,8 @@ struct m2_poly_extra_data
  	u32      utexy;
  	s32      texlod;
  	u8       luma;
 +	u8       zbuf;
++	const u16 *rgbtex;                              // true-colour texels (attr bit 6; Daytona USA Extended), else nullptr
  };
  
  // 0x10000 = size of the poly_sorted_list array
-@@ -669,6 +670,7 @@ public:
+@@ -669,6 +671,7 @@ public:
  		m_state(state),
  		m_destmap(512, 512),
  		m_fillmap(512, 512),
@@ -68,7 +69,7 @@ index fb59a45..57093a3 100644
  		m_xoffs(90),
  		m_yoffs(-8)
  	{
-@@ -693,6 +695,7 @@ private:
+@@ -693,6 +696,7 @@ private:
  	model2_state &m_state;
  	bitmap_rgb32 m_destmap;
  	bitmap_ind8 m_fillmap;
@@ -76,37 +77,57 @@ index fb59a45..57093a3 100644
  	int16_t m_xoffs, m_yoffs;
  
  	template <bool Translucent>
-@@ -748,6 +751,7 @@ struct model2_state::polygon
+@@ -748,6 +752,8 @@ struct model2_state::polygon
  	int16_t         viewport[4] = { 0, 0, 0, 0 };
  	int16_t         center[2] = { 0, 0 };
  	u8              window = 0;
 +	u8              zbuf = 0;                       // depth tested per pixel (attr bit 7; Daytona USA Extended)
++	const u16 *     rgbtex = nullptr;               // true-colour texels (attr bit 6; Daytona USA Extended)
  };
  
  struct model2_state::quad_m2
 diff --git a/src/mame/sega/model2_v.cpp b/src/mame/sega/model2_v.cpp
-index 3a5bfa5..b0a6309 100644
+index 3a5bfa51..b569d6d1 100644
 --- a/src/mame/sega/model2_v.cpp
 +++ b/src/mame/sega/model2_v.cpp
-@@ -510,6 +510,9 @@ void model2_state::model2_3d_process_polygon(raster_state *raster, u32 attr)
+@@ -510,6 +510,13 @@ void model2_state::model2_3d_process_polygon(raster_state *raster, u32 attr)
  			/* set the window */
  			poly->window = raster->cur_window;
  
 +			/* Daytona USA Extended: attr bit 7 (unused by the hardware's records) asks for a per-pixel depth test */
 +			poly->zbuf = (attr >> 7) & 1;
 +
++			/* Daytona USA Extended: attr bit 6 (unused by the hardware's records) marks a true-colour texture:
++			   header words 2 and 3 are then the word address of its ARGB1555 texels in the texture ROM */
++			poly->rgbtex = ((attr >> 6) & 1) ? &raster->texture_rom[((u32(object.texheader[3]) << 16) | object.texheader[2]) & raster->texture_rom_mask] : nullptr;
++
  			poly->num_vertices = clipped_verts;
  
  			for (int i = 0; i < clipped_verts; i++)
-@@ -577,6 +580,7 @@ void model2_renderer::model2_3d_render(polygon *poly, const rectangle &cliprect)
+@@ -577,6 +584,8 @@ void model2_renderer::model2_3d_render(polygon *poly, const rectangle &cliprect)
  	extra.colorbase = (poly->texheader[3] >> 6) & 0x3ff;
  	extra.luma = poly->luma;
  	extra.texlod = poly->texlod;
 +	extra.zbuf = poly->zbuf;
++	extra.rgbtex = nullptr;
  
  	if (renderer & 2)
  	{
-@@ -607,6 +611,12 @@ void model2_renderer::model2_3d_render(polygon *poly, const rectangle &cliprect)
+@@ -600,6 +609,13 @@ void model2_renderer::model2_3d_render(polygon *poly, const rectangle &cliprect)
+ 		extra.utexx = ((poly->texheader[2] >> 13) & 1) * 128;
+ 		extra.utexy = ((poly->texheader[2] >> 14) & 3) * 128;
+ 
++		if (poly->rgbtex)
++		{
++			// rows of texwidth ARGB1555 words, top row first; no sheet, no mipmaps, no microtexture
++			extra.rgbtex = poly->rgbtex;
++			extra.utex = 0;
++		}
++
+ 		for (int i = 0; i < poly->num_vertices; i++)
+ 		{
+ 			poly->v[i].pz = 1.0f / (poly->v[i].pz + std::numeric_limits<float>::min());
+@@ -607,6 +623,12 @@ void model2_renderer::model2_3d_render(polygon *poly, const rectangle &cliprect)
  			poly->v[i].pv = poly->v[i].pv * poly->v[i].pz * (1.0f / 8.0f);
  		}
  	}
@@ -120,7 +141,7 @@ index 3a5bfa5..b0a6309 100644
  	switch (poly->num_vertices)
  	{
 diff --git a/src/mame/sega/model2rd.ipp b/src/mame/sega/model2rd.ipp
-index a02143b..d7fe20c 100644
+index a02143be..531a0205 100644
 --- a/src/mame/sega/model2rd.ipp
 +++ b/src/mame/sega/model2rd.ipp
 @@ -48,6 +48,10 @@ void model2_renderer::draw_scanline_solid(int32_t scanline, const extent_t& exte
@@ -162,7 +183,17 @@ index a02143b..d7fe20c 100644
  		{
  			p[x] = color;
  			fill[x] = 0xff;
-@@ -247,6 +265,8 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
+@@ -240,6 +258,9 @@ inline s32 ATTR_FORCE_INLINE fast_log2(float value)
+ 	return (exp << 8) | s_log2_table[ival & 127];
+ }
+ 
++// Daytona USA Extended: the polygon luma at which a true-colour texel is shown at its own brightness
++static constexpr u32 RGB_LUMA_FULL = 160;
++
+ // textured render path
+ template <bool Translucent>
+ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent, const m2_poly_extra_data& object, int threadid)
+@@ -247,6 +268,8 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
  	model2_state *state = object.state;
  	u32 *const p = &m_destmap.pix(scanline);
  	u8 *const fill = &m_fillmap.pix(scanline);
@@ -171,7 +202,7 @@ index a02143b..d7fe20c 100644
  
  	/* extract color information */
  	const u16 *colortable_r = &state->m_colorxlat[0x0000/2];
-@@ -295,7 +315,7 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
+@@ -295,11 +318,46 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
  
  	for ( ; x < extent.stopx; x += dx, ooz += dooz, uoz += duoz, voz += dvoz)
  	{
@@ -180,7 +211,46 @@ index a02143b..d7fe20c 100644
  			continue;
  
  		float const z = 1.0F / ooz;
-@@ -349,7 +369,13 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
+ 
++		if (object.rgbtex)
++		{
++			// Daytona USA Extended: a true-colour texture, bilinear, wrapped, lit by the polygon's luma
++			s32 const ru = s32(uoz * z * 256.0F) - 0x80;
++			s32 const rv = s32(voz * z * 256.0F) - 0x80;
++			u32 const uf = ru & 0xff, vf = rv & 0xff;
++			u32 const ru0 = (ru >> 8) & (object.texwidth - 1), ru1 = (ru0 + 1) & (object.texwidth - 1);
++			u32 const rv0 = (rv >> 8) & (object.texheight - 1), rv1 = (rv0 + 1) & (object.texheight - 1);
++			u16 const c00 = object.rgbtex[rv0 * object.texwidth + ru0], c01 = object.rgbtex[rv0 * object.texwidth + ru1];
++			u16 const c10 = object.rgbtex[rv1 * object.texwidth + ru0], c11 = object.rgbtex[rv1 * object.texwidth + ru1];
++			u16 const nearest = (vf < 0x80) ? ((uf < 0x80) ? c00 : c01) : ((uf < 0x80) ? c10 : c11);
++			if (!(nearest & 0x8000))
++				continue;                                 // the nearest texel is transparent
++			u32 const w00 = (0x100 - uf) * (0x100 - vf), w01 = uf * (0x100 - vf), w10 = (0x100 - uf) * vf, w11 = uf * vf;
++			u32 rgb[3];
++			for (int ch = 0; ch < 3; ch++)
++			{
++				int const sh = 10 - 5 * ch;
++				// a transparent neighbour takes the nearest texel's colour
++				u32 const a = ((c00 & 0x8000) ? c00 : nearest) >> sh & 0x1f, b = ((c01 & 0x8000) ? c01 : nearest) >> sh & 0x1f;
++				u32 const c = ((c10 & 0x8000) ? c10 : nearest) >> sh & 0x1f, d = ((c11 & 0x8000) ? c11 : nearest) >> sh & 0x1f;
++				u32 const v5 = (a * w00 + b * w01 + c * w10 + d * w11) >> 8;      // 5.8 fixed
++				rgb[ch] = std::min<u32>((v5 * 255 / 31 * std::min<u32>(object.luma, RGB_LUMA_FULL) / RGB_LUMA_FULL) >> 8, 255);
++			}
++			p[x] = rgb_t(rgb[0], rgb[1], rgb[2]);
++			if (zbuf)
++			{
++				fill[x] = 0x7f;
++				zmap[x] = std::bit_cast<u32>(ooz);
++			}
++			else
++				fill[x] = 0xff;
++			continue;
++		}
++
+ 		s32 const mml = -object.texlod + fast_log2(z);    // equivalent to log2(z^2)
+ 		s32 const level = std::clamp(mml >> 7, 0, max_level);
+ 
+@@ -349,7 +407,13 @@ void model2_renderer::draw_scanline_tex(int32_t scanline, const extent_t &extent
  		tb = gamma_value[tb];
  
  		p[x] = rgb_t(tr, tg, tb);

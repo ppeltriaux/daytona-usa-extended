@@ -297,7 +297,9 @@ def test_extended_title_refuses(rs, monkeypatch):
             TT.extended_title(cs)
     with monkeypatch.context() as mp:
         real = G.owned_spans
-        mp.setattr(G, "owned_spans", lambda s: real(s) + [("data", TT.TITLE_RUN[0] + 16, 4, "a test's table")])
+        mp.setattr(G, "owned_spans", lambda s: sorted(real(s) + [("data", TT.TITLE_RUN[0] + 16, 4, "a test's table")],
+                                                         key=lambda sp: sp[:2]))   # sorted, as owned_spans' (v0.4:
+            #                                                 reserved spans now follow the title's run)
         G._OWNED[0] = None
         with pytest.raises(TT.TitleError, match="a test's table"):
             TT.extended_title(cs)

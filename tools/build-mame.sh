@@ -4,7 +4,9 @@
 #
 # The build is MAME 0.289 (`mame0289`) with tools/mame-daytona-rom-space.patch applied: the `daytona` ROM regions grown
 # as far as the game's address decoding reaches, the new areas loaded from five optional files (docs/formats/
-# model2-rom-images.md), and (v0.3) a per-pixel depth test in the Model 2 renderer for the polygon records that ask
+# model2-rom-images.md), (v0.4) true-colour textures read from the texture ROM for the polygon records that ask for
+# them with attribute bit 6 (docs/formats/model2-polygon-rom.md, "True-colour textures"), and (v0.3) a per-pixel
+# depth test in the Model 2 renderer for the polygon records that ask
 # for it with attribute bit 7, which no original record sets (docs/formats/model2-polygon-rom.md, "The depth test").
 # The stock set runs on it unchanged. The binary is
 # build/mame/model2; dtools.config.custom_mame() finds it through the stamp written at the end (the patch's SHA-256).

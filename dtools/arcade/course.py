@@ -3200,6 +3200,265 @@ def far_view(rs: RomSet) -> RomSet:
                             _rom_word_at(FAR_SITE): i960.ctrl("b", FAR_CODE - FAR_SITE)})
 
 
+# --- the car choice (v0.4) -------------------------------------------------------------------------------------------
+# docs/spike/2026-11-cars.md, "The draw routine". The arcade draws the player's car from tables: the body list (car
+# +0x14) and the cockpit list (+0x84) set by the car set-up from a selector, two extra part lists, and four wheels
+# whose lists and hubs come from tables in the program window. The hooks below give a Dreamcast car's (the row of the
+# chosen car in the cars' table, build.car_set) in their place; with choice 0 every hook does what its site did.
+
+CAR_CHOICE_RAM = 0x00501B64
+"""The chosen car, a byte: 0 the arcade's Hornet, 1-4 a Dreamcast car (romset.RESERVED_RAM)."""
+CAR_CODE = 0x0003F500
+CAR_SIZE = 0x300
+CAR_TABLE_ADDR = 0x03FFFE00
+"""The cars' table (build.DATA_BASE + build.CAR_TABLE): per choice four words, the body list, the cockpit list, the
+wheel-list table, the hubs."""
+CAR_CHOICES = 5
+CAR_HANDLING_ADDR = 0x03FFFD00
+"""The cars' handling rows (build.DATA_BASE + build.CAR_HANDLING): per choice CAR_HANDLING_WORDS words, four gear
+ratios then the four times the car's torque factor; row 0 the arcade's own (GEAR_RATIOS) twice."""
+CAR_HANDLING_WORDS = 8
+CAR_GEARS_RAM = 0x00501B68
+CAR_DRIVE_RAM = CAR_GEARS_RAM + 16
+"""The player's gear ratios and its drive ratios (ratio x torque factor), copied from the chosen car's row by the
+set-up hook; the routines below read them in place of GEAR_RATIOS."""
+FIELD_TABLE_ADDR = 0x03FFFA00
+"""The Dreamcast field's lists (build.DATA_BASE + build.FIELD_TABLE): per car index (the spawn records': SPAWN_RECORDS
+rows; row 0, the player's, unused) four list pointers, near, mid, far, far, which the set-up hook gives an opponent in
+place of its record's words 2, 3, 4 and 5 (car +0x80, +0x7c, +0x78, +0x74) when a Dreamcast car is chosen."""
+GEAR_RATIOS = 0x0286F780
+GEAR_SITES = (0x00010970, 0x00012468, 0x00012470, 0x000124D4, 0x000124DC)
+"""`ld GEAR_RATIOS[gear*4],reg` (8 bytes, the table's address the second word) where the ratio turns speed into
+engine speed and at a gear change: these read CAR_GEARS_RAM."""
+DRIVE_SITES = (0x0000F3A0, 0x0000F3CC)
+"""The same load in the engine routine (0xf35c: torque curve x ratio, manual and automatic): these read
+CAR_DRIVE_RAM, so the car's torque factor scales its drive. Only the player's car runs these routines (a read tap
+over a race: one car struct, 0x505180; docs/spike/2026-11-cars.md)."""
+CAR_SELECTOR = 0x00501488
+CAR_BODIES, CAR_COCKPITS = 0x0281E390, 0x0281E3A8
+CAR_PARTS_LIST = 0x0284A2D0
+CAR_HUB_TABLE = 0x00230D54
+CAR_WHEEL_TABLES = (0x00230476, 0x00230496)
+ATTRACT_WORD = 0x005FE5E4
+"""The word the attract rotation clears (0x2144-0x2148, r3 0) when it picks its next course: the choice is cleared
+with it, so the demo after a game drives the Hornet."""
+
+
+CAR_INSTALLS = {"setup": (0x0000EC8C, "g13"), "reset": (0x0000D12C, "g13"), "reset2": (0x0000E548, "r9"),
+                "setup2": (0x00222BF0, "r13")}
+"""Where the game installs a car's lists from the selector: name -> (address, the register holding the car). Each
+is `ld CAR_SELECTOR,r15`, the body list to car +0x14 and the cockpit list to +0x84 (CAR_INSTALL_BYTES in all): the
+race's car set-up (0xec8c, every car), a second set-up in the window code (0x222bf0), and two that re-install the
+player's lists during the race (0xd12c, 0xe548: after a crash the Hornet's lists came back, seen on the first
+captures with a Dreamcast car, 27 Nov 2026). r3 and r15 are loaded again after each."""
+CAR_INSTALL_BYTES = 0x20
+CAR_DAMAGE, CAR_DAMAGE_OTHER = 0x00017174, 0x000171C4
+"""The damage routine (g13 the car, g0 the state): it stores a dented body list (one of sixteen a selector, window
+0x2327d0), a cockpit list (0x2328d0) and a number list to car +0x14, +0x84 and +0x258, or with bit 8 of g0 (its
+other half, CAR_DAMAGE_OTHER) the whole ones. The Dreamcast's dented shells (nine a car) do not map onto the sixteen
+states, so a Dreamcast car is left undented: the hook runs the routine, then puts the chosen car's lists back."""
+CAR_SCRATCH_RAM = CAR_GEARS_RAM + 0x20
+"""A word: the car a site's stub passes to the install routine (its own frame has no access to the caller's)."""
+
+
+def car_sites() -> dict[str, tuple[int, bytes]]:
+    """name -> (address, the 8 bytes there on a set without the car choice): the instructions the hooks replace."""
+    return {**{name: (addr, i960.mem("ld", "r15", CAR_SELECTOR)) for name, (addr, _) in CAR_INSTALLS.items()},
+            "parts": (0x7D7C, i960.mem("lda", "g0", CAR_PARTS_LIST)),
+            "hubs": (0x7DA4, i960.mem("lda", "r9", CAR_HUB_TABLE)),
+            "wheels": (0x7DD8, i960.mem("lda", "r15", CAR_WHEEL_TABLES[1])),
+            "hubs2": (0x7FF4, i960.mem("lda", "r9", CAR_HUB_TABLE)),
+            "wheels2": (0x6CC8, i960.mem("lda", "r3", CAR_WHEEL_TABLES[0])),
+            "attract": (0x2148, i960.mem("st", "r3", ATTRACT_WORD)),
+            "damage": (CAR_DAMAGE, i960.cobr("bbs", 8, "g0", CAR_DAMAGE_OTHER - CAR_DAMAGE) + i960.reg("and", 15, "g0", "g0"))}
+
+
+def _car_default(default) -> int:
+    if not isinstance(default, int) or isinstance(default, bool) or not 0 <= default < CAR_CHOICES:
+        raise CourseError(f"car default {default!r} is not 0..{CAR_CHOICES - 1}")
+    return default
+
+
+def car_code(default: int = 0, cap: int = OBC) -> tuple[i960.Block, dict[str, int]]:
+    """(the code at CAR_CODE, name -> the address of each site's hook; "cap" the far view's). The choice is the byte
+    at CAR_CHOICE_RAM, or the constant `default` when that is 1-4 (stage 1: one car forced, no screen).
+
+    - the installs (CAR_INSTALLS: the set-ups and the two resets during a race): the site's two stores (the
+      selector's body and cockpit lists); then for the player's car (car +0x4 is 0) the chosen car's handling row
+      copied to RAM and, with a choice, the row's body and cockpit lists, the body list also in place of its spawn
+      record's four detail lists (car +0x74 to +0x80: the game draws the player from them after a crash); for an opponent, with a choice, its four
+      lists of the Dreamcast field (FIELD_TABLE_ADDR); then on past the site's CAR_INSTALL_BYTES.
+    - damage: the game's routine run whole, then for the player's car with a choice the row's lists put back (a
+      Dreamcast car does not dent).
+    - parts: with a choice, ret (the two part lists and the cabinet's number are the Hornet's); else the site's `lda`.
+    - hubs, hubs2, wheels, wheels2: the row's hubs / wheel-list table with a choice, else the site's table.
+    - attract: the site's store, and the choice byte cleared (the attract demo drives the Hornet).
+    - cap: with a choice the frame's polygon cap is `cap` whatever the course id (the far view's store)."""
+    default = _car_default(default)
+    if not isinstance(cap, int) or isinstance(cap, bool) or not OBC <= cap <= CAP_MAX:
+        raise CourseError(f"car cap {cap!r} is not {OBC}..{CAP_MAX}")
+    sites = car_sites()
+    b = i960.Block(CAR_CODE)
+    at = {}
+
+    def choice(reg: str) -> None:
+        if default:
+            b.reg("mov", default, reg)
+        else:
+            b.mem("ldob", reg, CAR_CHOICE_RAM)
+
+    for name, (addr, base) in CAR_INSTALLS.items():  # each site: its car to the install routine, then on
+        at[name] = b.here
+        b.mem("st", base, CAR_SCRATCH_RAM)
+        b.ctrl("call", "install")
+        b.ctrl("b", addr + CAR_INSTALL_BYTES)
+
+    b.label("install")                               # a routine of its own frame: the car in r9
+    b.mem("ld", "r9", CAR_SCRATCH_RAM)
+    b.mem("ld", "r15", CAR_SELECTOR)
+    b.mem("ld", "r3", CAR_BODIES, None, "r15", 4)
+    b.mem("st", "r3", 0x14, "r9")
+    b.mem("ld", "r3", CAR_COCKPITS, None, "r15", 4)
+    b.mem("st", "r3", 0x84, "r9")
+    b.mem("ldob", "r4", 0x4, "r9")
+    b.cobr("cmpobe", 0, "r4", "install_player")
+    choice("r5")                                     # an opponent: with a Dreamcast car chosen, the Dreamcast field's
+    b.cobr("cmpobe", 0, "r5", "install_out")
+    b.reg("shlo", 4, "r4", "r4")
+    for k, off in enumerate((0x80, 0x7C, 0x78)):
+        b.mem("ld", "r3", FIELD_TABLE_ADDR + 4 * k, "r4")
+        b.mem("st", "r3", off, "r9")
+    b.mem("st", "r3", 0x74, "r9")                    # the far list again for the fourth level (the row's last word)
+    b.ctrl("ret")
+    b.label("install_player")
+    choice("r4")
+    b.reg("shlo", 5, "r4", "r5")                     # the chosen car's handling row (choice 0: the arcade's own)
+    b.mem("lda", "r5", CAR_HANDLING_ADDR, "r5")
+    b.reg("mov", 0, "r6")
+    b.label("install_copy")
+    b.mem("ld", "r3", None, "r5", "r6", 4)
+    b.mem("st", "r3", CAR_GEARS_RAM, None, "r6", 4)
+    b.reg("addo", 1, "r6", "r6")
+    b.cobr("cmpobg", CAR_HANDLING_WORDS, "r6", "install_copy")
+    b.cobr("cmpobe", 0, "r4", "install_out")
+    b.reg("shlo", 4, "r4", "r4")
+    b.label("install_lists")                         # r9 the car, r4 the choice x 16
+    b.mem("ld", "r3", CAR_TABLE_ADDR + 4, "r4")
+    b.mem("st", "r3", 0x84, "r9")
+    b.mem("ld", "r3", CAR_TABLE_ADDR, "r4")
+    b.mem("st", "r3", 0x14, "r9")
+    for off in (0x80, 0x7C, 0x78, 0x74):             # and where the game draws the player as it draws the field (its
+        b.mem("st", "r3", off, "r9")                 # spawn record's lists: after a crash the Hornet's showed)
+    b.label("install_out")
+    b.ctrl("ret")
+
+    at["damage"] = b.here                            # the game's routine in a frame of its own, then the lists back
+    b.ctrl("call", "damage_own")
+    b.mem("st", "g13", CAR_SCRATCH_RAM)
+    b.ctrl("call", "reinstall")
+    b.ctrl("ret")
+    b.label("damage_own")                            # the site's two instructions (its branch is out of a bbs's reach)
+    b.cobr("bbc", 8, "g0", "damage_low")
+    b.ctrl("b", CAR_DAMAGE_OTHER)
+    b.label("damage_low")
+    b.reg("and", 15, "g0", "g0")
+    b.ctrl("b", CAR_DAMAGE + 8)
+    b.label("reinstall")                             # the player's car with a choice: its row's lists again
+    b.mem("ld", "r9", CAR_SCRATCH_RAM)
+    b.mem("ldob", "r4", 0x4, "r9")
+    b.cobr("cmpobne", 0, "r4", "install_out")
+    choice("r4")
+    b.cobr("cmpobe", 0, "r4", "install_out")
+    b.reg("shlo", 4, "r4", "r4")
+    b.ctrl("b", "install_lists")
+
+    at["parts"] = b.here
+    choice("g0")
+    b.cobr("cmpobe", 0, "g0", "parts_own")
+    b.ctrl("ret")
+    b.label("parts_own")
+    b.mem("lda", "g0", CAR_PARTS_LIST)
+    b.ctrl("b", sites["parts"][0] + 8)
+
+    for name, reg, word, own in (("hubs", "r9", 12, CAR_HUB_TABLE), ("wheels", "r15", 8, CAR_WHEEL_TABLES[1]),
+                                 ("hubs2", "r9", 12, CAR_HUB_TABLE), ("wheels2", "r3", 8, CAR_WHEEL_TABLES[0])):
+        at[name] = b.here
+        choice(reg)
+        b.cobr("cmpobe", 0, reg, name + "_own")
+        b.reg("shlo", 4, reg, reg)
+        b.mem("ld", reg, CAR_TABLE_ADDR + word, reg)
+        b.ctrl("b", sites[name][0] + 8)
+        b.label(name + "_own")
+        b.mem("lda", reg, own)
+        b.ctrl("b", sites[name][0] + 8)
+
+    at["attract"] = b.here
+    b.mem("st", "r3", ATTRACT_WORD)
+    b.mem("stob", "r3", CAR_CHOICE_RAM)
+    b.ctrl("b", sites["attract"][0] + 8)
+
+    at["cap"] = b.here
+    choice("r4")
+    b.cobr("cmpobe", 0, "r4", "cap_own")
+    b.mem("lda", "r3", cap)
+    b.label("cap_own")
+    b.mem("st", "r3", POLYGON_CAP_RAM)
+    b.ctrl("b", _far_cap_site() + 8)
+    return b, at
+
+
+def _far_cap_site() -> int:
+    """The address of the far view's cap store (`st r3,POLYGON_CAP_RAM`, 8 bytes) inside FAR_CODE."""
+    code, store = far_code().bytes(), i960.mem("st", "r3", POLYGON_CAP_RAM)
+    k = code.find(store)
+    if k < 0 or k % 4 or code.find(store, k + 4) >= 0:
+        raise CourseError("the far view's code does not hold one cap store")
+    return FAR_CODE + k
+
+
+def car_chosen(rs: RomSet) -> bool:
+    """True when `rs` carries the car choice (its set-up site branches to CAR_CODE). CourseError for `rs` not a
+    RomSet."""
+    if not isinstance(rs, RomSet):
+        raise CourseError(f"{type(rs).__name__} is not a RomSet")
+    site = car_sites()["setup"][0]
+    return rs.read_i960(site, 4) == i960.ctrl("b", CAR_CODE - site)
+
+
+def car_choice(rs: RomSet, default: int = 0, cap: int = CAP_MAX - 2000) -> RomSet:
+    """`rs` (with the far view) with the car choice: CAR_CODE written and each site's instruction replaced by a
+    branch to its hook (the site's second word kept), the far view's cap store among them. `default` 1-4 forces that
+    car (no screen needed); 0 reads CAR_CHOICE_RAM. CourseError for `rs` not a RomSet with the far view, one that
+    carries the choice already, a site that does not hold its instruction, a CAR_CODE that is not free (0xff), a
+    default outside 0-4 or a cap outside OBC..CAP_MAX."""
+    if not isinstance(rs, RomSet):
+        raise CourseError(f"{type(rs).__name__} is not a RomSet")
+    if not far_viewed(rs):
+        raise CourseError("car_choice needs the far view (its cap store is hooked)")
+    if car_chosen(rs):
+        raise CourseError("car_choice: the set carries the car choice already")
+    block, at = car_code(default, cap)
+    code = block.bytes()
+    if len(code) > CAR_SIZE:
+        raise CourseError(f"car_choice: {len(code)} code bytes do not fit CAR_SIZE {CAR_SIZE}")
+    if rs.read_i960(CAR_CODE, CAR_SIZE) != b"\xff" * CAR_SIZE:
+        raise CourseError(f"CAR_CODE {CAR_CODE:#x} (+{CAR_SIZE:#x}) is not free (0xff)")
+    sites = dict(car_sites())
+    sites["cap"] = (_far_cap_site(), i960.mem("st", "r3", POLYGON_CAP_RAM))
+    patches = {_rom_word_at(CAR_CODE): code}
+    for addrs, ram in ((GEAR_SITES, CAR_GEARS_RAM), (DRIVE_SITES, CAR_DRIVE_RAM)):
+        for addr in addrs:
+            if rs.read_i960(addr + 4, 4) != struct.pack("<I", GEAR_RATIOS) or rs.read_i960(addr + 3, 1) != b"\x90":
+                raise CourseError(f"car_choice {addr:#x}: {rs.read_i960(addr, 8).hex()} is not a load of the gear "
+                                  f"ratios")
+            patches[_rom_word_at(addr + 4)] = struct.pack("<I", ram)
+    for name, (addr, own) in sites.items():
+        if rs.read_i960(addr, 8) != own:
+            raise CourseError(f"car_choice {name} {addr:#x}: {rs.read_i960(addr, 8).hex()}, not {own.hex()}")
+        patches[_rom_word_at(addr)] = i960.ctrl("b", at[name] - addr)
+    return rs.with_patches(patches)
+
+
 # --- rankings per entry (M4b, Task 6) -------------------------------------------------------------------------------
 # Spec decision 19: every course id keeps its own best-time ranking table in backup SRAM; a new entry never writes an
 # original's table and none is shared. The game reaches a table only through two per-id arrays (RANKING_TABLES and

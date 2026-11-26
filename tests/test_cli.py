@@ -259,8 +259,8 @@ def _fake_cli(monkeypatch, rs: RomSet, seen: dict, built=None):
         def __exit__(self, *exc):
             pass
 
-    def release_set(s, d):
-        seen["env"] = os.environ.get("DAYTONA_OUT")
+    def release_set(s, d, car=None):
+        seen["env"], seen["car"] = os.environ.get("DAYTONA_OUT"), car
         if built is not None:
             raise built
         return s
@@ -377,7 +377,7 @@ def test_cli_build(romset_zip, dc_path, tmp_path):
     is copied byte for byte, build-report.txt is written (every member sha1 in it), out holds nothing else but the work
     folder, and the ROM directory and the disc are not written (names, sizes and times unchanged). The re-mesh cache is
     seeded from config.out_dir()'s (the cold build is Step 5's pin, RELEASE_SHA1)."""
-    from tests.test_release import _release
+    from tests.test_release import _release_cars as _release
     roms = romset_zip.parent
     out = tmp_path / "Daytona USA Extended"
     warm = config.out_dir() / "cache" / "remesh"

@@ -3,14 +3,14 @@
 Daytona USA Extended is the 1994 Sega Model 2 arcade *Daytona USA* with eight courses: its own three, byte for byte
 (Three Seven Speedway, Dinosaur Canyon, Sea-Side Street Galaxy) and five converted from the Dreamcast's *Daytona USA*
 (2001): Desert City, National Park Speedway, Circuit Pixie, Rin Rin Rink and Mermaid Lake. Each of the eight also runs
-in reverse. The five race on the arcade's own engine in MAME: its field of cars, its checkpoints. Since v0.3 they draw
+in reverse. The five race on the arcade's own engine in MAME: its field of cars, its checkpoints. Since v0.4 you can also drive four of the Dreamcast's cars. Since v0.3 the five draw
 further and in more detail than the arcade board could (see "Changes"). The project page:
 https://continuearcade.com/daytona-usa-extended/
 
 This repository is a converter: one command builds the game on your machine from your own copies of the arcade game and
 of the Dreamcast disc. It holds none of either (see "Legal").
 
-> **v0.3 is an early release, still under development.** All eight courses and their reverses load and race on the
+> **v0.4 is an early release, still under development.** All eight courses and their reverses load and race on the
 > arcade's engine, but laps and opponents are not tuned yet and the new courses have rendering defects: see "Known
 > issues".
 
@@ -22,8 +22,8 @@ of the Dreamcast disc. It holds none of either (see "Legal").
   or its `.cue` with the track `.bin` files beside it. Other releases and regions are refused.
 - **Python 3.12 or newer** (numpy is installed by `pip`).
 - **On Windows:** Python 3.12 or newer from python.org (tick "Add python.exe to PATH"), and the prebuilt MAME from this
-  repository's Releases page (https://github.com/ppeltriaux/daytona-usa-extended/releases; the latest release: v0.3
-  needs v0.3's MAME): `daytona-usa-extended-mame-0.289-win64.zip` (`mame.exe`, linked statically so it needs no DLLs, MAME's
+  repository's Releases page (https://github.com/ppeltriaux/daytona-usa-extended/releases; the latest release: v0.4
+  needs v0.4's MAME): `daytona-usa-extended-mame-0.289-win64.zip` (`mame.exe`, linked statically so it needs no DLLs, MAME's
   licences, the patch and a README.txt). Unzip it anywhere. The `.7z` works as on the other systems: no `bsdtar` is
   needed. Windows' own `tar.exe` is tried first (current Windows reads the `.7z`), then py7zr (installed with
   `dtools` on Python 3.12 to 3.14). On Python 3.15 there is no py7zr yet, so the `.7z` is read by `tar.exe`; if your
@@ -86,10 +86,23 @@ NATIONAL PARK SPEEDWAY, CIRCUIT PIXIE, RIN RIN RINK and MERMAID LAKE. Every pane
 ones also show their laps for the game mode and a map of the course. After Circuit Select a Course Direction screen
 shows the course's map twice: turn the wheel to the right for REVERSE (the red arrow) or leave it for NORMAL (the
 white one), then press the gas; REVERSE runs the course the other way round, with its own time limits, pit stalls and
-best times.
+best times. Then a Car Select screen shows five cars side by side: the arcade's
+Hornet and the Dreamcast's Grasshopper, Falcon, Lightning and Unicorn. With the wheel centred or left the Hornet is
+chosen; turn it to the right and the choice steps through the other four (the chosen car turns, its name goes
+yellow, and two bars show its speed and acceleration). Keep the wheel there and press the gas: the choice follows the
+wheel until you do. With a Dreamcast car the 39 opponents are the Dreamcast's too.
 
 ## Changes
 
+- **v0.4:** the Dreamcast's cars. A Car Select screen after Course Direction offers the arcade's Hornet (the wheel
+  left alone: the game as before) and the Dreamcast's Grasshopper, Falcon, Lightning and Unicorn, on all eight
+  courses and both directions. A Dreamcast car is the disc's full model, with its own bonnet and dashboard from the
+  driver's seat, and drives with the Dreamcast's gear ratios and engine factor for that car (top speed on Three
+  Seven Speedway, automatic: Hornet 325 km/h, Grasshopper 305, Falcon 316, Lightning 335, Unicorn 349). With a
+  Dreamcast car the field is the Dreamcast's forty opponent cars (four shapes, five liveries each); with the Hornet
+  it is the arcade's own. The cars' textures are true colour, which the Model 2 cannot show: a second change to
+  MAME's Model 2 renderer, used only by these cars. **v0.4 needs v0.4's MAME:** rebuild it with
+  `tools/build-mame.sh` (or take v0.4's Windows zip), and rebuild the set. Best times are kept.
 - **v0.3:** the five Dreamcast courses and their reverses draw further and cleaner. They show two more rows of
   scenery cells ahead and one more to each side, and always the whole block round the car (the arcade opens at most
   15 cells a frame; these courses now draw 45), with the frame's polygon limit raised from 5,000 to 28,000 for them
@@ -129,6 +142,12 @@ best times.
 - **Time limits are measured, not played in:** courses 3 to 7 and all eight reverses take their times from the
   computer-driven field's pace, with the arcade's own courses' slack; the normal race at the default difficulty was driven in MAME, the long races
   and other difficulties are derived. Their laps and opponents are not tuned. The arcade's three keep their own.
+- **The Dreamcast's cars (v0.4):** every car corners as the Hornet (the Dreamcast's small grip differences are not
+  applied); a Dreamcast car does not dent and its wheels do not blur with speed; the opponents keep the arcade's
+  wheels and driving, only their bodies change; the time limits do not follow the car, so the Unicorn makes them
+  easier and the Grasshopper harder; the best-time tables are shared by all cars. Which of the Dreamcast's forty
+  opponents sits where on the grid is this project's own spread. After a game with a Dreamcast car, the attract
+  demo that follows shows that car until the title comes round, then the Hornet again.
 - **Beyond the arcade board:** since v0.3 the five new courses and their reverses draw up to about 13,000 polygons
   a frame and use a depth test the Model 2 does not have. MAME does not model the board's drawing time, so the game
   holds its rate there; a real board would not. Animated scenery (flags, banners) still appears at the arcade's

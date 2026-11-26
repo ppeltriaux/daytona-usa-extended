@@ -92,10 +92,16 @@ RESERVED = {
                                  "RANK_SIZE)"),
                 (0x3CE98, 0x400, "the shared empty actor table (build.EMPTY_ACTORS: 256 zero words at "
                                  "build.EMPTY_AT, every course without actors names it)"),
+                (0x3F800, 0x700, "the Car Select screen's code and tables (carscreen.CODE_AT, CODE_SIZE; v0.4)"),
+                (0x3F500, 0x300, "the car choice's hooks (course.CAR_CODE, CAR_SIZE; v0.4)"),
                 (0x3FF00, 0x100, "the far view's hook (course.FAR_CODE, FAR_SIZE)")),
     "data": ((0x1F00000, 0x20000, "the sixteen-entry select's data (select.DATA_AT, DATA_SPAN)"),
              (0x1001580, 0x260, "the new ids' read-only SRAM stand-in (course.SRAM_SINK, SRAM_SINK_SIZE)"),
-             (0x1000000, 0x1580, "grow_ids' sixteen-entry tables and records (course.ID_HOME up to SRAM_SINK)")),
+             (0x1000000, 0x1580, "grow_ids' sixteen-entry tables and records (course.ID_HOME up to SRAM_SINK)"),
+             (0x1FF0000, 0x4000, "the Car Select screen's graphics (carscreen.DATA_AT, DATA_SPAN; v0.4)"),
+             (0x1FFFA00, 0x300, "the Dreamcast field's lists (build.FIELD_TABLE, course.FIELD_TABLE_ADDR; v0.4)"),
+             (0x1FFFD00, 0x100, "the cars' handling rows (build.CAR_HANDLING, course.CAR_HANDLING_ADDR; v0.4)"),
+             (0x1FFFE00, 0x200, "the Dreamcast cars' table (build.CAR_TABLE, CAR_TABLE_SIZE; v0.4)")),
 }
 """region -> ((image offset, length, owner), ...): space a patch owns whatever its bytes (grow_ids' home has 0xff
 holes: the unused record slots 0-2). Left out of CUSTOM_FREE; tgp.write_free and the converter's program writes
@@ -104,7 +110,10 @@ tables and blocks take). The literals are course's and select's addresses (romse
 them together."""
 RESERVED_RAM = ((0x00501B00, 0x40, "select.SELECT_RAM: the course vote's sixteen slots and the select's first"),
                 (0x00501B40, 0x14, "course.WIDE_RAM: widen_ids' shadows of the course id's per-id values"),
-                (0x00501B54, 0x10, "course.VIEW_RAM: view_ids' shadow of the course id's view-test pointers"))
+                (0x00501B54, 0x10, "course.VIEW_RAM: view_ids' shadow of the course id's view-test pointers"),
+                (0x00501B64, 0x4, "course.CAR_CHOICE_RAM: the chosen car, 0 the arcade's Hornet (v0.4)"),
+                (0x00501B68, 0x24, "course.CAR_GEARS_RAM: the player's gear ratios, those times its torque factor, "
+                                   "then CAR_SCRATCH_RAM (v0.4)"))
 """i960 work RAM a patch owns: (address, length, owner)."""
 
 

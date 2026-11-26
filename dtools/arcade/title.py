@@ -110,7 +110,7 @@ band (at frame 3450 tile RAM holds the HUD's tiles 0x8280-0x8285 there in place 
 text blinks). The HUD's other rows (41-46: CREDIT, the copyright, the SEGA logo) lie below the logo map, which ends
 on row 40. `_drawn` refuses a word cell here: the HUD would overwrite it."""
 
-TITLE_RUN = (0x01F20000, 0x000E0000)
+TITLE_RUN = (0x01F20000, 0x000D0000)      # to the Car Select screen's graphics (v0.4: romset.RESERVED; 0xE0000 before)
 """(data image offset, length): the bytes the title may take, the custom data run after the select's reserved data
 (romset.CUSTOM_FREE["data"][1]), outside build.ID_DATA_FREE (the converter, the views and the mirrors allocate
 there, never here). 0xff and owned by nothing on the M5b and release chains before the title."""

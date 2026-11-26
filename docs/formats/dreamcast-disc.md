@@ -588,3 +588,34 @@ dropped and ten objects thinned to 70-90 % (`build.THIN`) it draws 1.84, within 
 So for a course converted the same way the proxy times about 2 estimates the drawn maximum before thinning, and a
 proxy past about 2,100 (4,251 / 2) says thinning will be needed; where to thin is found from the drawn count per
 frame (Task 7 replayed the measured lap), not from the proxy.
+
+## Car sets (`CAR{c}{level}_POL.BIN`, `_TEX.BIN`; v0.4)
+
+Reader: `dtools/dc/car.py` (`car_files`, `car_parts`, `wheel_positions`). The executable's file table at `0x154908`:
+`CARCOM`, then level 0 and level 1 of H, G, F, L, U (Hornet, Grasshopper, Falcon, Lightning, Unicorn), level 0 and 1
+of P, N, C, J, B (the bonus cars), then level 2 of all ten. The files are course model files (`dtools.dc.pol`); their
+textures add the layout `0x0d`, a twiddled rectangle (`tex.LAYOUTS`, e.g. a 64 x 16 `0xd01`). `CARCOM_POL.BIN` does
+not decode (a non-finite vertex at `0x3ad98`); **not found:** what it holds.
+
+A level-0 set has 80 objects, the same roles by index on the five stock cars (read from a rendered sheet of each
+object, `spike/v04/car_sheet.py`; the same scale as the arcade's car, about 2.0 x 1.3 x 4.8, y up):
+
+| objects | part |
+|---|---|
+| 0-8 | the body shell (about 640 triangles): 0 undamaged, 1-8 dented versions |
+| 9-16 | the floor with the bumpers: 9 undamaged, 10-16 damaged versions |
+| 17 | the inside of the shell |
+| 18-26 | the decal layer over the body, one per body version |
+| 27, 28 | the windscreen; the cabin with its cage |
+| 29-31 | three untextured hulls (use **not found**: shadow or collision) |
+| 32-51 | twenty roof-and-door number panels (two sets of ten colours) |
+| 52-57 | bumpers and skirts as loose pieces |
+| 58-62, 63-67 | the wheels, left and right, round the origin (160 triangles): a still one and four more blurred |
+| 68, 69-73, 74-77, 78 | the driver's seat view: the windscreen frame, five bonnets, the dashboard (four), the cabin |
+| 79 | a 4-triangle marker |
+
+Level 2 is a lighter build of the same (54 objects). **Not found:** what level 1 is for.
+
+Wheel hubs: `1ST_READ.BIN` `0x124ac0`, per car four (x, y, z) f32: front left, front right, rear left, rear right
+(the Hornet ±0.81, 0.343, 1.41 / −1.34; the Grasshopper ±0.75, 0.343, 1.333 / −1.34). The cars' corner boxes are at
+`0x11fc0c` (per car four (x, 0.33, z)).

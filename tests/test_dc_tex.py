@@ -425,3 +425,20 @@ def test_to_rgba_real(disc):
             assert tex.to_rgba(t, level).shape == (t.entry.height >> level, t.entry.width >> level, 4)
         flat += bool((rgba == rgba[0, 0]).all())
     assert flat == 0                                # measured: no CS0 texture is one flat colour
+
+
+def test_twiddled_rect_synthetic():
+    """Layout 0x0d (the car sets' `0xd01`): a twiddled rectangle, stored as the plain twiddled layout is (two bytes a
+    texel, no mipmaps), named `twiddled_rect` so the format word re-encodes as read. A 32 x 8 picture: texel (y, x)
+    of the left 8 x 8 block is where the twiddle puts it, the next block follows it."""
+    texels = (np.arange(32 * 8, dtype="<u2") | 0x8000)
+    blob = texels.tobytes()
+    (t,) = tex.decode_tex(blob, (_entry(32, 8, 0xD01),), "SYN_TEX.BIN")
+    assert (t.layout, t.pixel, t.mips) == ("twiddled_rect", "RGB565", 1) and t.data == blob
+    got = tex.texels(t)
+    assert got.shape == (8, 32)
+    assert got[0, 1] == texels[2] and got[1, 0] == texels[1] and got[0, 8] == texels[64] and got[7, 31] == texels[255]
+    assert tex.to_rgba(t).shape == (8, 32, 4)
+    assert tex.encode_tex((t,), len(blob)) == blob
+    assert tex.stored_size("twiddled_rect", 64, 16) == 2 * 64 * 16
+    assert tex.parse_fmt(0xD01) == ("twiddled_rect", "RGB565")

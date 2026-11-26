@@ -3564,3 +3564,211 @@ def mirror_check(disc: DcDisc, n: int = 3) -> dict:
     note("checkpoints", out["checkpoints"]["arcade"] != out["checkpoints"]["dreamcast"])
     out["differs"], out["outside"] = tuple(differs), tuple(outside)
     return out
+
+
+# ---- the Dreamcast's cars (v0.4; docs/spike/2026-11-cars.md) ----
+
+CAR_TABLE = 0x1FFFE00
+CAR_TABLE_SIZE = 0x200
+"""The cars' table (data-ROM offset; i960 DATA_BASE + CAR_TABLE), reserved (romset.RESERVED): CAR_COUNT rows of four
+u32, one per car choice (0 the arcade's Hornet: zeros; 1-4 the Dreamcast's Grasshopper, Falcon, Lightning, Unicorn):
+the body list, the cockpit list, the address of its wheel-list table and of its hubs. Then at CAR_WHEELS a wheel-list
+table per car (four list pointers, in the arcade's order: front x < 0, front x > 0, rear x < 0, rear x > 0, as its own
+table at window 0x230486) and at CAR_HUBS the hubs per car (four x, y, z f32, the same order, as the arcade's at
+window 0x230d54). The car hook (course.car_choice) reads the rows."""
+CAR_COUNT = 5
+CAR_HANDLING = 0x1FFFD00
+"""The cars' handling rows (data-ROM offset, reserved; course.CAR_HANDLING_ADDR): per choice four gear ratios and
+the four times the car's torque factor, f32. Row 0 is the arcade's own ratios twice (data `0x86f780`); a Dreamcast
+car's are its own (`dc.car.handling`: the Dreamcast's Hornet row equals the arcade's ratios, so its cars' values are
+already relative to the arcade's Hornet)."""
+GEAR_RATIOS_AT = 0x86F780
+CAR_WHEELS = 0x50
+CAR_HUBS = 0xA0
+CAR_TEXTURES = CUSTOM_FREE["textures"][1]
+"""The run the cars' texels, texture headers and texture points take: the textures region's second custom area."""
+
+
+FIELD_TABLE = 0x1FFFA00
+FIELD_ROWS = 44
+"""The Dreamcast field's lists (data-ROM offset, reserved; course.FIELD_TABLE_ADDR): per car index 1..FIELD_ROWS-1
+four list pointers, near, mid, far, far. Car n drives car `(n // 4) % 10` of opponents' set `n % 4` (the disc's
+forty: four shapes in five liveries with two numbers; the spread is this project's, the Dreamcast's was not traced)."""
+
+
+class CarEntry(NamedTuple):
+    body: int
+    cockpit: int
+    wheels: tuple[int, int, int, int]
+    hubs: tuple[tuple[float, float, float], ...]
+
+
+def _car_header(tex: np.ndarray, base: int, checker: bool) -> bytes:
+    """A true-colour polygon's texture header (model.RGB_TEX): word 0 the size, the textured bit and the checker bit,
+    word 1 zero, words 2-3 the word address of the texels."""
+    h, w = tex.shape
+    if any(s < 32 or s > 4096 or s & (s - 1) for s in (w, h)):
+        raise ConvertError(f"a car texture of {w} x {h} is not a header size (32 << n)")
+    h0 = (w // 32).bit_length() - 1 | ((h // 32).bit_length() - 1) << 3 | 1 << 14 | (1 << 15 if checker else 0)
+    return struct.pack("<4H", h0, 0, base & 0xFFFF, base >> 16)
+
+
+def car_set(rs: RomSet, disc, cars=(1,), field: bool = False) -> RomSet:
+    """`rs` (a custom set with the library bound patched: the release chain's) with the Dreamcast cars `cars`
+    (choices 1-4, each once) converted from `disc` (`convert.car.car_from_disc`) and filed: the baked texels, then per
+    piece its texture headers (one per drawn record) and texture points in CAR_TEXTURES; the objects in the custom
+    polygon area (NEW_ID_RUNS); the body, cockpit and two wheel lists in the list home (tgp.DATA_FREE); the car's row,
+    wheel-list table and hubs in CAR_TABLE. ConvertError for an `rs` that is not a custom RomSet, `cars` that are not
+    distinct choices 1-4, a set that holds cars already (all are filed in one call), or room that is short (naming
+    the run)."""
+    from dtools.convert import car as ccar
+    from dtools.dc.car import handling as dcar_handling
+    from dtools.dc.errors import DcError
+    rs = _romset(rs)
+    if not rs.custom:
+        raise ConvertError("car_set: the set is not a custom set (romset.as_custom): the cars need its new areas")
+    if (not isinstance(cars, (tuple, list)) or not cars or len(set(cars)) != len(cars)
+            or not all(is_int(c) and not isinstance(c, bool) and 1 <= c < CAR_COUNT for c in cars)):
+        raise ConvertError(f"car_set: cars {cars!r:.40} are not distinct choices 1..{CAR_COUNT - 1}")
+    if rs.data[FIELD_TABLE:CAR_TABLE + CAR_TABLE_SIZE] != b"\xff" * (CAR_TABLE + CAR_TABLE_SIZE - FIELD_TABLE):
+        raise ConvertError("car_set: the set holds cars already (they are filed in one call: a car's white texels "
+                           "read as free bytes, so a later call could not tell them from room)")
+    busy: list[tuple[str, int, int]] = []              # every span placed in this call, across the cars
+    if not isinstance(field, bool):
+        raise ConvertError(f"car_set: field {field!r:.40} is not a bool")
+    for car in cars:
+        conv = ccar.car_from_disc(disc, int(car))
+        patches: dict[tuple[str, int], bytes] = {}
+
+        def place(region, run, blob, what, align=4, patches=patches, busy=busy):
+            at = _first_fit(rs, region, run, len(blob), f"car {car}: {what}", tuple(busy), align)
+            patches[(region, at)] = bytes(blob)
+            busy.append((region, at, len(blob)))
+            return at
+
+        bases = [place("textures", CAR_TEXTURES, t.astype("<u2").tobytes(), "texels") // 2 for t in conv.textures]
+        lists = []
+        for pieces, what in ((conv.body, "body"), (conv.cockpit, "cockpit"), (conv.wheel_left, "left wheel"),
+                             (conv.wheel_right, "right wheel")):
+            entries = []
+            for pc in pieces:
+                heads = b"".join(_car_header(conv.textures[t], bases[t], chk)
+                                 for r, t, chk in zip(pc.obj.records, pc.textures, pc.checker) if t >= 0)
+                tha = place("textures", CAR_TEXTURES, heads, f"{what} headers") // 2
+                tpa = place("textures", CAR_TEXTURES, T.encode_texture_points(pc.points, pc.obj), f"{what} points") // 2
+                words = P.encode_object(pc.obj)
+                oba = place("polygons", NEW_ID_RUNS["polygons"], struct.pack(f"<{len(words)}I", *words),
+                            f"{what} object") // 4
+                entries.append((0x800000 | oba, tpa, tha, len(pc.obj.records)))
+            need = C.OBJECT_ENTRY_SIZE * len(entries) + 4
+            at = DATA_BASE + _first_fit(rs, "data", tgp.DATA_FREE, need, f"car {car}: {what} list", tuple(busy))
+            busy.append(("data", at - DATA_BASE, need))
+            patches[("data", at - DATA_BASE)] = C.encode_object_list(object_list_at(at, entries))
+            lists.append(at)
+        body, cockpit, left, right = lists
+        try:
+            hd = dcar_handling(disc.read("1ST_READ.BIN"), int(car))
+        except DcError as err:
+            raise ConvertError(str(err)) from err
+        own = struct.unpack_from("<4f", rs.data, GEAR_RATIOS_AT)
+        patches[("data", CAR_HANDLING)] = struct.pack("<8f", *own, *own)
+        patches[("data", CAR_HANDLING + 32 * car)] = struct.pack("<8f", *hd.gears, *(g * hd.torque for g in hd.gears))
+        row = CAR_TABLE + 16 * car
+        wheels, hubs = CAR_TABLE + CAR_WHEELS + 16 * car, CAR_TABLE + CAR_HUBS + 48 * car
+        patches[("data", row)] = struct.pack("<4I", body, cockpit, DATA_BASE + wheels, DATA_BASE + hubs)
+        patches[("data", wheels)] = struct.pack("<4I", left, right, left, right)
+        patches[("data", hubs)] = struct.pack("<12f", *(v for h in conv.hubs for v in h))
+        rs = rs.with_patches(patches)
+    return _field_set(rs, disc, busy) if field else rs
+
+
+def _field_set(rs: RomSet, disc, busy: list) -> RomSet:
+    """`rs` with the Dreamcast's opponents filed (car_set's `field`): each opponents' set's baked texels in
+    CAR_TEXTURES, each of its objects once (headers and points in the textures region's first custom run or, when that is
+    full, CAR_TEXTURES; the object in the custom polygon area), and per car index its near, mid and far lists in
+    the list home and its row of FIELD_TABLE."""
+    from dtools.convert import car as ccar
+    from dtools.dc import car as dcar
+    patches: dict[tuple[str, int], bytes] = {}
+
+    def place(region, runs, blob, what, align=4):
+        err = None
+        for run in runs:
+            try:
+                at = _first_fit(rs, region, run, len(blob), f"field: {what}", tuple(busy), align)
+            except ConvertError as e:
+                err = e
+                continue
+            patches[(region, at)] = bytes(blob)
+            busy.append((region, at, len(blob)))
+            return at
+        raise err
+
+    tex_runs = (NEW_ID_RUNS["textures"], CAR_TEXTURES)     # the texels need CAR_TEXTURES: headers and points elsewhere first
+    lists: dict[tuple[int, int], tuple[int, int, int]] = {}
+    for k in range(dcar.ENEMY_FILES):
+        es = ccar.enemies_from_disc(disc, k)
+        bases = [place("textures", (CAR_TEXTURES,), t.astype("<u2").tobytes(), "texels") // 2 for t in es.textures]
+        entries: dict[int, list] = {}
+        for idx, pieces in es.objects.items():
+            entries[idx] = []
+            for pc in pieces:
+                heads = b"".join(_car_header(es.textures[t], bases[t], chk)
+                                 for r, t, chk in zip(pc.obj.records, pc.textures, pc.checker) if t >= 0)
+                tha = place("textures", tex_runs, heads, "headers") // 2
+                tpa = place("textures", tex_runs, T.encode_texture_points(pc.points, pc.obj), "points") // 2
+                words = P.encode_object(pc.obj)
+                oba = place("polygons", (NEW_ID_RUNS["polygons"],), struct.pack(f"<{len(words)}I", *words), "object") // 4
+                entries[idx].append((0x800000 | oba, tpa, tha, len(pc.obj.records)))
+        for c, parts in enumerate(es.cars):
+            got = []
+            for level in parts:
+                ents = [e for idx in level for e in entries[idx]]
+                need = C.OBJECT_ENTRY_SIZE * len(ents) + 4
+                at = DATA_BASE + _first_fit(rs, "data", tgp.DATA_FREE, need, "field: a car's list", tuple(busy))
+                busy.append(("data", at - DATA_BASE, need))
+                patches[("data", at - DATA_BASE)] = C.encode_object_list(object_list_at(at, ents))
+                got.append(at)
+            lists[(k, c)] = tuple(got)
+    table = bytearray(16 * FIELD_ROWS)
+    for n in range(1, FIELD_ROWS):
+        near, mid, far = lists[(n % dcar.ENEMY_FILES, (n // dcar.ENEMY_FILES) % dcar.ENEMY_CARS)]
+        struct.pack_into("<4I", table, 16 * n, near, mid, far, far)
+    patches[("data", FIELD_TABLE)] = bytes(table)
+    return rs.with_patches(patches)
+
+
+def field_lists(rs: RomSet, n: int) -> tuple[int, int, int, int]:
+    """Car index `n`'s row of the Dreamcast field's table: its near, mid, far and far list. ConvertError for an index
+    outside 1..FIELD_ROWS-1 or a set without the field."""
+    rs = _romset(rs)
+    if not is_int(n) or isinstance(n, bool) or not 1 <= n < FIELD_ROWS:
+        raise ConvertError(f"field_lists: car {n!r} is not 1..{FIELD_ROWS - 1}")
+    row = struct.unpack_from("<4I", rs.data, FIELD_TABLE + 16 * n)
+    if not all(DATA_BASE <= p < DATA_BASE + 0x1000000 for p in row):
+        raise ConvertError("field_lists: the set holds no Dreamcast field (build.car_set with field=True)")
+    return row
+
+
+def car_entry(rs: RomSet, car: int) -> CarEntry:
+    """Car `car`'s row of the car table read back. ConvertError for a car outside 1..CAR_COUNT-1 (car 0 is the
+    arcade's own Hornet and has no row) or one that is not filed."""
+    rs = _romset(rs)
+    if not is_int(car) or isinstance(car, bool) or not 1 <= car < CAR_COUNT:
+        raise ConvertError(f"car_entry: car {car!r} has no row (the Dreamcast's cars are 1..{CAR_COUNT - 1})")
+    body, cockpit, wheels, hubs = struct.unpack_from("<4I", rs.data, CAR_TABLE + 16 * car)
+    if (wheels, hubs) != (DATA_BASE + CAR_TABLE + CAR_WHEELS + 16 * car, DATA_BASE + CAR_TABLE + CAR_HUBS + 48 * car):
+        raise ConvertError(f"car_entry: car {car} is not filed in this set")
+    h = struct.unpack_from("<12f", rs.data, hubs - DATA_BASE)
+    return CarEntry(body, cockpit, struct.unpack_from("<4I", rs.data, wheels - DATA_BASE),
+                    tuple(h[3 * k:3 * k + 3] for k in range(4)))
+
+
+def car_room(before: RomSet, after: RomSet) -> str:
+    """The bytes a car_set took per region, as a sentence (the spike log's)."""
+    out = []
+    for region in ("textures", "polygons", "data"):
+        a, b = np.frombuffer(getattr(before, region), np.uint8), np.frombuffer(getattr(after, region), np.uint8)
+        out.append(f"{region} {int((a != b).sum()):,} bytes")
+    return ", ".join(out)
+

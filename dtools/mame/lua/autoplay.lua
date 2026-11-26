@@ -73,6 +73,7 @@ if os.getenv("DAYTONA_TEXDUMP_DIR") and lua_dir then dofile(lua_dir .. "/texdump
 if os.getenv("DAYTONA_SELECT_LOG") and lua_dir then dofile(lua_dir .. "/select_log.lua") end
 if os.getenv("DAYTONA_TITLE_LOG") and lua_dir then dofile(lua_dir .. "/title_log.lua") end
 if os.getenv("DAYTONA_DIR_LOG") and lua_dir then dofile(lua_dir .. "/dir_log.lua") end
+if os.getenv("DAYTONA_CAR_LOG") and lua_dir then dofile(lua_dir .. "/car_log.lua") end
 
 local function field(tag, name)
   local port = manager.machine.ioport.ports[tag]
@@ -164,6 +165,26 @@ if dir_hold > 0 then
   if dir_hold >= 120 then dir_right = dir_step - 120 end
 end
 mission_step = mission_step + dir_shift
+-- DAYTONA_CAR (v0.4, a set raced through Course Direction): "step" for a set with the Car Select screen: the gas
+-- pressed on it at car_step (the paddle as DAYTONA_WHEEL_SCRIPT leaves it picks the car), Mission Select's step and
+-- everything after it CAR_LATE frames later; "late" for a set without the screen: the same later steps and no car
+-- step, so both races begin on the same frame (tests/test_cars_mame.py test_race_after_car_screen_as_release).
+local car_mode = os.getenv("DAYTONA_CAR")
+-- DAYTONA_CAR_WHEEL (with "step"): the paddle value held on the Car Select screen (128 the Hornet; 160, 172, 190,
+-- 250 the Grasshopper, Falcon, Lightning, Unicorn: inside carscreen.BANDS), with the entry's own paddle before it.
+local car_wheel = tonumber(os.getenv("DAYTONA_CAR_WHEEL") or "")
+local CAR_LATE = 70
+local car_step = dir_step + 60
+if car_mode then
+  if car_mode ~= "step" and car_mode ~= "late" then error("DAYTONA_CAR must be step or late") end
+  if not direction or direction == "idle" or direction == "late" then error("DAYTONA_CAR needs a direction step") end
+  -- DAYTONA_CAR_HOLD (frames, the page's media): the Car Select screen held that much longer before its step,
+  -- everything after it that much later. Within the screen's 640-frame timer. Unset: 0.
+  local car_hold = tonumber(os.getenv("DAYTONA_CAR_HOLD") or "0")
+  if car_hold < 0 or car_hold > 520 then error("DAYTONA_CAR_HOLD past the screen's timer") end
+  car_step = car_step + car_hold
+  mission_step, dir_shift = mission_step + CAR_LATE + car_hold, dir_shift + CAR_LATE + car_hold
+end
 local gas_from = tonumber(os.getenv("DAYTONA_GAS_FROM") or tostring(coin_at + 700 + dir_shift))
 -- 2026-11-07: the race begins (green light / GO!) at 1645 on Advanced and Expert, at 1890 on Beginner.
 local RACE = {[0] = coin_at + 1290, [1] = coin_at + 1045, [2] = coin_at + 1045}
@@ -177,6 +198,7 @@ else
   steps[course_step] = true
   steps[mission_step] = true
   if direction and direction ~= "idle" and direction ~= "late" then steps[dir_step] = true end
+  if car_mode == "step" then steps[car_step] = true end
 end
 -- The second game (DAYTONA_SECOND): the first game's script again from its coin, on its own entry or course.
 local second = os.getenv("DAYTONA_SECOND")
@@ -270,6 +292,9 @@ emu.register_frame_done(function()
     elseif direction == "held" and frame >= mission_from and frame < dir_step + 10 then
       w = GEAR_WHEEL.manual                    -- right throughout: never armed
     end
+    if car_mode == "step" and car_wheel and frame >= dir_step + 15 and frame < car_step + 10 then
+      w = car_wheel                            -- held on the Car Select screen until its step: the car's band
+    end
     wheel:set_value(w)
   end
   if steps[frame] then accel:set_value(0xe0)
@@ -288,3 +313,24 @@ end)
 -- Region: the I/O board's three dipswitch banks are all "unused" in MAME 0.289 (model2.cpp ioboard_dipswitches), so
 -- -dipswitch cannot change the language; the boot page shows COUNTRY JPN, a game setting kept in NVRAM (test menu).
 -- Manual: the car starts in 1st (the HUD says SHIFT at ~112 km/h); this script does not shift (the :GEARS fields).
+
+-- DAYTONA_VIEW (v0.4): "frame:n,..." presses view button n (1-4: VR1 red, VR2 blue, VR3 yellow, VR4 green) from that
+-- frame for 6 frames. Its own frame counter, counted as `frame` above (frame_done calls).
+do
+  local views = {}
+  for f, n in string.gmatch(os.getenv("DAYTONA_VIEW") or "", "(%d+):(%d)") do views[tonumber(f)] = tonumber(n) end
+  if next(views) then
+    local vr = {field(":IN0", "VR1 (Red)"), field(":IN0", "VR2 (Blue)"), field(":IN0", "VR3 (Yellow)"),
+                field(":IN1", "VR4 (Green)")}
+    local vframe, held, release_at = 0, nil, 0
+    emu.register_frame_done(function()
+      vframe = vframe + 1
+      if views[vframe] and vr[views[vframe]] then
+        held = vr[views[vframe]]
+        held:set_value(1)
+        release_at = vframe + 6
+      end
+      if held and vframe == release_at then held:set_value(0); held = nil end
+    end)
+  end
+end

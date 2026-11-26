@@ -107,7 +107,7 @@ def _long_ids(long_ids) -> tuple[int, ...]:
 
 def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
                 *, title: bool = True, times: bool = True, pits: bool = True, direction: bool = True,
-                far_view: bool | None = None) -> RomSet:
+                far_view: bool | None = None, car: int | None = None) -> RomSet:
     """The release set from the stock `rs` and the US Dreamcast `disc` (the module docstring's chain): ids 3-7
     converted (RELEASE_CONVERTED), the rankings, the select with the release row (select.ENTRIES), the converted
     courses' own time tables (build.race_times on RELEASE_TIME_IDS), the start time raised on `long_ids` (none by
@@ -116,6 +116,10 @@ def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
     `times=False` and RELEASE_LONG_IDS, v0.1.1's chain); `direction=False` leaves out the reverse courses, their
     views and the Course Direction screen (v0.1.2's chain; the gates of the courses race it: the screen moves the race
     52 frames and changes nothing else, tests/test_dirscreen_mame.py test_race_after_screen_as_stock);
+    `car` (v0.4, test-only until the Car Select screen): None leaves the Dreamcast cars out (v0.3's set, byte for
+    byte); 0-4 files RELEASE_CARS (build.car_set) and hooks the car choice (course.car_choice): 0 adds the Car Select
+    screen (carscreen.patch_cars), which sets the choice; 1-4 force that car and show no screen (test builds). It needs
+    the far view.
     `far_view=False` (default: as `direction`) leaves out v0.3's far view and depth test: the converted courses
     thinned as v0.2's and without model.DEPTH_TEST,
     build.viewed_set's views, the polygon cap 5,000 (v0.2's chain, RELEASE_SHA1_V02); the far view needs `direction`;
@@ -136,6 +140,10 @@ def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
             raise ReleaseError(f"{name} {v!r:.60} is not a bool")
     if far_view and not direction:
         raise ReleaseError("far_view needs direction (its views cover the reverse ids)")
+    if car is not None and (not isinstance(car, int) or isinstance(car, bool) or not 0 <= car < C.CAR_CHOICES):
+        raise ReleaseError(f"car {car!r:.60} is not None or a car choice 0..{C.CAR_CHOICES - 1}")
+    if car is not None and not far_view:
+        raise ReleaseError("car needs far_view (the car choice hooks its polygon cap)")
     out = C.widen_ids(C.guard_new_ids(C.grow_ids(rs)))
     for n in RELEASE_CONVERTED:
         out = build.converted_set(out, disc, n, slot=n, scenery="model", **({"road_copy": True} if direction else {}),
@@ -159,9 +167,23 @@ def release_set(rs: RomSet, disc: DcDisc, long_ids: tuple[int, ...] = (),
     if not direction:
         return build.viewed_set(out)
     from dtools.arcade import dirscreen
-    return dirscreen.patch_direction(build.far_viewed_set(out) if far_view
-                                     else build.viewed_set(out, build.REVERSE_VIEW))
+    out = dirscreen.patch_direction(build.far_viewed_set(out) if far_view
+                                    else build.viewed_set(out, build.REVERSE_VIEW))
+    if car is None:
+        return out
+    out = C.car_choice(build.car_set(out, disc, RELEASE_CARS, field=True), default=car, cap=build.POLYGON_CAP)
+    if car:
+        return out                              # a forced car (test builds): no Car Select screen
+    from dtools.arcade import carscreen
+    return carscreen.patch_cars(out, build.POLYGON_CAP)
 
+
+RELEASE_CAR = 0
+"""`release_set`'s `car` for the set `dtools build` writes (v0.4): the cars filed, the choice byte read, the Car
+Select screen. `release_set` itself defaults to None, v0.3's set, which the gates of the courses race."""
+RELEASE_CARS = (1, 2, 3, 4)
+"""The Dreamcast cars a set with `car` holds: the Grasshopper, Falcon, Lightning and Unicorn (2,574,283 bytes of the
+textures region's second custom area, 4 MB; 391,143 of polygons)."""
 
 # ---- packaging (Task 5): the inputs checked, the set written ----
 

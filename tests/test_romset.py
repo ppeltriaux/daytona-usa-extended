@@ -337,7 +337,8 @@ def test_custom_files_and_free_runs_layout():
     assert CUSTOM_AREAS == {"data": ((0x1000000, 0x1000000),), "copro_data": ((0x400000, 0x1C00000),),
                             "polygons": ((0x1000000, 0x1000000),),
                             "textures": ((0x400000, 0x400000), (0xC00000, 0x400000))}
-    assert CUSTOM_FREE == {**CUSTOM_AREAS, "data": ((0x10017E0, 0xEFE820), (0x1F20000, 0xE0000))}
+    assert CUSTOM_FREE == {**CUSTOM_AREAS, "data": ((0x10017E0, 0xEFE820), (0x1F20000, 0xD0000), (0x1FF4000, 0xBA00))}   # and the Dreamcast field's lists (0x1FFFA00, 0x300)
+    # v0.4: less the Car Select screen's graphics (0x1FF0000, 0x4000) and the cars' table (0x1FFFE00, 0x200)
     assert not set(CUSTOM_FILES) & set(CRCS)
 
 
